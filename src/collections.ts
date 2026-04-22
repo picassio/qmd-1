@@ -42,6 +42,23 @@ export interface ModelsConfig {
   generate?: string;
 }
 
+/** Per-function API provider config (embed, chat, rerank can each use a different provider) */
+export interface ProviderEndpointConfig {
+  url?: string;
+  key?: string;
+  model?: string;
+}
+
+export interface EmbedProviderConfig extends ProviderEndpointConfig {
+  dims?: number;
+}
+
+export interface ProvidersConfig {
+  embed?: EmbedProviderConfig;
+  chat?: ProviderEndpointConfig;
+  rerank?: ProviderEndpointConfig;
+}
+
 /**
  * The complete configuration file structure
  */
@@ -50,7 +67,8 @@ export interface CollectionConfig {
   editor_uri?: string;                        // Editor URI template for terminal hyperlinks
   editor_uri_template?: string;               // Alias for editor_uri
   collections: Record<string, Collection>;    // Collection name -> config
-  models?: ModelsConfig;
+  models?: ModelsConfig;                      // Local GGUF model overrides
+  providers?: ProvidersConfig;                // API provider endpoints (embed/chat/rerank)
 }
 
 /**

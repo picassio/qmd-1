@@ -78,7 +78,8 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, setDefaultLlm, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
+import { ApiLLM, hasApiProviders } from "../llm-api.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -120,7 +121,11 @@ function getStore(): ReturnType<typeof createStore> {
     try {
       const config = loadConfig();
       syncConfigToDb(store.db, config);
-      if (config.models) {
+      // API providers take priority over local GGUF models
+      if (hasApiProviders(config.providers)) {
+        const apiLlm = new ApiLLM({ providers: config.providers });
+        setDefaultLlm(apiLlm);
+      } else if (config.models) {
         setDefaultLlamaCpp(new LlamaCpp({
           embedModel: config.models.embed,
           generateModel: config.models.generate,

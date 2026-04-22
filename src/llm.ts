@@ -367,36 +367,28 @@ export async function pullModels(
  * Abstract LLM interface - implement this for different backends
  */
 export interface LLM {
-  /**
-   * Get embeddings for text
-   */
+  /** Current embedding model name/URI */
+  readonly embedModelName: string;
+
+  /** Get embeddings for text */
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
 
-  /**
-   * Generate text completion
-   */
+  /** Batch embed multiple texts */
+  embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
+
+  /** Generate text completion */
   generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null>;
 
-  /**
-   * Check if a model exists/is available
-   */
+  /** Check if a model exists/is available */
   modelExists(model: string): Promise<ModelInfo>;
 
-  /**
-   * Expand a search query into multiple variations for different backends.
-   * Returns a list of Queryable objects.
-   */
-  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean }): Promise<Queryable[]>;
+  /** Expand a search query into multiple variations for different backends */
+  expandQuery(query: string, options?: { context?: string; intent?: string; includeLexical?: boolean }): Promise<Queryable[]>;
 
-  /**
-   * Rerank documents by relevance to a query
-   * Returns list of documents with relevance scores (higher = more relevant)
-   */
+  /** Rerank documents by relevance to a query */
   rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
 
-  /**
-   * Dispose of resources
-   */
+  /** Dispose of resources */
   dispose(): Promise<void>;
 }
 
@@ -1607,17 +1599,38 @@ export async function withLLMSession<T>(
  * Unlike withLLMSession, this does not use the global singleton.
  */
 export async function withLLMSessionForLlm<T>(
-  llm: LlamaCpp,
+  llm: LLM,
   fn: (session: ILLMSession) => Promise<T>,
   options?: LLMSessionOptions
 ): Promise<T> {
-  const manager = new LLMSessionManager(llm);
-  const session = new LLMSession(manager, options);
-
+  // LlamaCpp uses full session management; other LLM impls get a thin wrapper
+  if (llm instanceof LlamaCpp) {
+    const manager = new LLMSessionManager(llm);
+    const session = new LLMSession(manager, options);
+    try {
+      return await fn(session);
+    } finally {
+      session.release();
+    }
+  }
+  // Generic LLM: create a simple session adapter
+  const ac = new AbortController();
+  if (options?.maxDuration) {
+    const t = setTimeout(() => ac.abort(), options.maxDuration);
+    t.unref?.();
+  }
+  const session: ILLMSession = {
+    get isValid() { return !ac.signal.aborted; },
+    get signal() { return ac.signal; },
+    embed: (text, opts) => llm.embed(text, opts),
+    embedBatch: (texts, opts) => llm.embedBatch(texts, opts),
+    expandQuery: (query, opts) => llm.expandQuery(query, opts),
+    rerank: (query, docs, opts) => llm.rerank(query, docs, opts),
+  };
   try {
     return await fn(session);
   } finally {
-    session.release();
+    ac.abort();
   }
 }
 
@@ -1658,8 +1671,33 @@ export function setDefaultLlamaCpp(llm: LlamaCpp | null): void {
  * Call this before process exit to prevent NAPI crashes.
  */
 export async function disposeDefaultLlamaCpp(): Promise<void> {
+  if (defaultLlm) {
+    await defaultLlm.dispose();
+    defaultLlm = null;
+  }
   if (defaultLlamaCpp) {
     await defaultLlamaCpp.dispose();
     defaultLlamaCpp = null;
   }
+}
+
+// =============================================================================
+// Generic LLM singleton (can be LlamaCpp or ApiLLM)
+// =============================================================================
+
+let defaultLlm: LLM | null = null;
+
+/**
+ * Set a generic LLM instance (ApiLLM or LlamaCpp).
+ * When set, getDefaultLlm() returns this instead of the LlamaCpp singleton.
+ */
+export function setDefaultLlm(llm: LLM | null): void {
+  defaultLlm = llm;
+}
+
+/**
+ * Get the default LLM. Returns the generic LLM if set, otherwise the LlamaCpp singleton.
+ */
+export function getDefaultLlm(): LLM {
+  return defaultLlm ?? getDefaultLlamaCpp();
 }
