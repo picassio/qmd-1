@@ -17,14 +17,24 @@
  *       url: https://openrouter.ai/api/v1
  *       key: sk-or-...
  *       model: google/gemini-2.5-flash
+ *       api: openai                       # "openai" (default) or "anthropic"
  *     rerank:
  *       url: https://api.jina.ai/v1
  *       key: jina_...
  *       model: jina-reranker-v2-base-multilingual
  *
+ * For Anthropic-compatible providers (MiniMax CN, etc.):
+ *
+ *   providers:
+ *     chat:
+ *       url: https://api.minimaxi.com/anthropic
+ *       key: sk-cp-...
+ *       model: MiniMax-M2.7-highspeed
+ *       api: anthropic
+ *
  * Env vars override config file values:
  *   QMD_EMBED_URL, QMD_EMBED_KEY, QMD_EMBED_MODEL, QMD_EMBED_DIMS
- *   QMD_CHAT_URL,  QMD_CHAT_KEY,  QMD_CHAT_MODEL
+ *   QMD_CHAT_URL,  QMD_CHAT_KEY,  QMD_CHAT_MODEL,  QMD_CHAT_API
  *   QMD_RERANK_URL, QMD_RERANK_KEY, QMD_RERANK_MODEL
  *
  * Env vars override config file values.
@@ -48,7 +58,7 @@ import type {
 } from "./llm.js";
 
 export { formatQueryForEmbedding, formatDocForEmbedding } from "./llm.js";
-import type { ProvidersConfig } from "./collections.js";
+import type { ProvidersConfig, ApiFormat } from "./collections.js";
 export type { ProvidersConfig };
 
 // =============================================================================
@@ -59,6 +69,7 @@ interface ResolvedEndpoint {
   url: string;
   key: string;
   model: string;
+  api: ApiFormat;
 }
 
 interface ResolvedEmbedEndpoint extends ResolvedEndpoint {
@@ -81,6 +92,11 @@ function e(key: string): string {
   return process.env[key] ?? "";
 }
 
+function resolveApi(envKey: string, cfgApi?: ApiFormat): ApiFormat {
+  const v = e(envKey) || cfgApi || "";
+  return v === "anthropic" ? "anthropic" : "openai";
+}
+
 function resolve(cfg: ProvidersConfig = {}): ResolvedProviders {
   return {
     embed: {
@@ -88,16 +104,19 @@ function resolve(cfg: ProvidersConfig = {}): ResolvedProviders {
       key:   e("QMD_EMBED_KEY")   || cfg.embed?.key   || "",
       model: e("QMD_EMBED_MODEL") || cfg.embed?.model || "text-embedding-3-small",
       dims:  e("QMD_EMBED_DIMS")  ? parseInt(e("QMD_EMBED_DIMS")) : cfg.embed?.dims,
+      api:   resolveApi("QMD_EMBED_API", cfg.embed?.api),
     },
     chat: {
       url:   e("QMD_CHAT_URL")   || cfg.chat?.url   || "https://openrouter.ai/api/v1",
       key:   e("QMD_CHAT_KEY")   || cfg.chat?.key   || "",
       model: e("QMD_CHAT_MODEL") || cfg.chat?.model || "google/gemini-2.5-flash",
+      api:   resolveApi("QMD_CHAT_API", cfg.chat?.api),
     },
     rerank: {
       url:   e("QMD_RERANK_URL")   || cfg.rerank?.url   || "",
       key:   e("QMD_RERANK_KEY")   || cfg.rerank?.key   || "",
       model: e("QMD_RERANK_MODEL") || cfg.rerank?.model || "",
+      api:   resolveApi("QMD_RERANK_API", cfg.rerank?.api),
     },
     timeout: 30_000,
   };
@@ -201,27 +220,82 @@ export class ApiLLM implements LLM {
 
   async generate(prompt: string, options: GenerateOptions = {}): Promise<GenerateResult | null> {
     if (this.disposed) return null;
-    const { url, key, model } = this.p.chat;
-    try {
-      const data = await post<{
-        choices: Array<{ message: { content: string } }>;
-        model: string;
-      }>(`${url}/chat/completions`, {
-        model: options.model || model,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: options.maxTokens || 150,
-        temperature: options.temperature ?? 0.7,
-      }, key, this.p.timeout);
+    const { url, key, model, api } = this.p.chat;
+    const useModel = options.model || model;
 
-      return {
-        text: data.choices?.[0]?.message?.content || "",
-        model: data.model || model,
-        done: true,
-      };
+    try {
+      if (api === "anthropic") {
+        return await this.generateAnthropic(url, key, useModel, prompt, options);
+      }
+      return await this.generateOpenAI(url, key, useModel, prompt, options);
     } catch (err) {
       console.error("generate error:", (err as Error).message);
       return null;
     }
+  }
+
+  private async generateOpenAI(
+    url: string, key: string, model: string, prompt: string, options: GenerateOptions,
+  ): Promise<GenerateResult> {
+    const data = await post<{
+      choices: Array<{ message: { content: string } }>;
+      model: string;
+    }>(`${url}/chat/completions`, {
+      model,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: options.maxTokens || 150,
+      temperature: options.temperature ?? 0.7,
+    }, key, this.p.timeout);
+
+    return {
+      text: data.choices?.[0]?.message?.content || "",
+      model: data.model || model,
+      done: true,
+    };
+  }
+
+  private async generateAnthropic(
+    url: string, key: string, model: string, prompt: string, options: GenerateOptions,
+  ): Promise<GenerateResult> {
+    // Anthropic Messages API format
+    // If URL already ends with /messages, use as-is
+    // If URL ends with /anthropic (e.g. MiniMax CN), append /v1/messages
+    // Otherwise append /messages
+    const endpoint = url.endsWith("/messages") ? url
+      : url.endsWith("/v1") ? `${url}/messages`
+      : `${url}/v1/messages`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: options.maxTokens || 150,
+        temperature: options.temperature ?? 0.7,
+      }),
+      signal: AbortSignal.timeout(this.p.timeout),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Anthropic ${res.status}: ${text.slice(0, 300)}`);
+    }
+
+    const data = await res.json() as {
+      content: Array<{ type: string; text?: string }>;
+      model: string;
+    };
+
+    const text = data.content
+      ?.filter((b: any) => b.type === "text")
+      .map((b: any) => b.text)
+      .join("") || "";
+
+    return { text, model: data.model || model, done: true };
   }
 
   // ── Query Expansion ─────────────────────────────────────

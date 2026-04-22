@@ -42,11 +42,16 @@ export interface ModelsConfig {
   generate?: string;
 }
 
+/** API format: OpenAI chat/completions or Anthropic messages */
+export type ApiFormat = "openai" | "anthropic";
+
 /** Per-function API provider config (embed, chat, rerank can each use a different provider) */
 export interface ProviderEndpointConfig {
   url?: string;
   key?: string;
   model?: string;
+  /** API format: "openai" (default) or "anthropic" */
+  api?: ApiFormat;
 }
 
 export interface EmbedProviderConfig extends ProviderEndpointConfig {
