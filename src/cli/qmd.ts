@@ -3117,7 +3117,8 @@ if (isMain) {
         const maxDocsPerBatch = parseEmbedBatchOption("maxDocsPerBatch", cli.values["max-docs-per-batch"]);
         const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
-        // Use API embed model when providers are configured, else local GGUF
+        // Ensure store is initialized (which sets up ApiLLM if providers configured)
+        getStore();
         const { getDefaultLlm } = await import("../llm.js");
         const embedModelForIndex = getDefaultLlm().embedModelName || DEFAULT_EMBED_MODEL_URI;
         await vectorIndex(embedModelForIndex, !!cli.values.force, {
