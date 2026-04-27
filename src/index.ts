@@ -64,10 +64,7 @@ import {
   type EmbedResult,
   type ChunkStrategy,
 } from "./store.js";
-import {
-  LlamaCpp,
-  type LLM,
-} from "./llm.js";
+import type { LLM } from "./llm-types.js";
 import { ApiLLM, hasApiProviders } from "./llm-api.js";
 import {
   setConfigSource,
@@ -372,6 +369,9 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   if (hasApiProviders(config?.providers)) {
     llm = new ApiLLM({ providers: config!.providers });
   } else {
+    // Lazy-load node-llama-cpp only when no API providers are configured.
+    // This avoids triggering the Vulkan/CMake build on machines without GPU.
+    const { LlamaCpp } = await import("./llm.js");
     llm = new LlamaCpp({
       embedModel: config?.models?.embed,
       generateModel: config?.models?.generate,

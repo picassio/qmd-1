@@ -2,6 +2,10 @@
  * llm.ts - LLM abstraction layer for QMD using node-llama-cpp
  *
  * Provides embeddings, text generation, and reranking using local GGUF models.
+ * This module is lazy-loaded only when API providers are not configured.
+ *
+ * All types and pure functions live in llm-types.ts (no node-llama-cpp dependency).
+ * This file re-exports them for backward compatibility.
  */
 
 import {
@@ -18,173 +22,57 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, closeSync } from "fs";
 
-// =============================================================================
-// Embedding Formatting Functions
-// =============================================================================
+// Re-export everything from llm-types.ts for backward compatibility.
+// Consumers that import from "./llm.js" will still get all types and functions.
+export {
+  isQwen3EmbeddingModel,
+  formatQueryForEmbedding,
+  formatDocForEmbedding,
+  withLLMSessionGeneric,
+  setDefaultLlm,
+  getDefaultLlm,
+  getOrCreateDefaultLlm,
+  disposeDefaultLlm,
+  DEFAULT_EMBED_MODEL_NAME,
+} from "./llm-types.js";
 
-/**
- * Detect if a model URI uses the Qwen3-Embedding format.
- * Qwen3-Embedding uses a different prompting style than nomic/embeddinggemma.
- */
-export function isQwen3EmbeddingModel(modelUri: string): boolean {
-  return /qwen.*embed/i.test(modelUri) || /embed.*qwen/i.test(modelUri);
-}
+export type {
+  TokenLogProb,
+  EmbeddingResult,
+  GenerateResult,
+  RerankDocumentResult,
+  RerankResult,
+  ModelInfo,
+  EmbedOptions,
+  GenerateOptions,
+  RerankOptions,
+  LLMSessionOptions,
+  ILLMSession,
+  QueryType,
+  Queryable,
+  RerankDocument,
+  LLM,
+} from "./llm-types.js";
 
-/**
- * Format a query for embedding.
- * Uses nomic-style task prefix format for embeddinggemma (default).
- * Uses Qwen3-Embedding instruct format when a Qwen embedding model is active.
- */
-export function formatQueryForEmbedding(query: string, modelUri?: string): string {
-  const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
-  if (isQwen3EmbeddingModel(uri)) {
-    return `Instruct: Retrieve relevant documents for the given query\nQuery: ${query}`;
-  }
-  return `task: search result | query: ${query}`;
-}
-
-/**
- * Format a document for embedding.
- * Uses nomic-style format with title and text fields (default).
- * Qwen3-Embedding encodes documents as raw text without special prefixes.
- */
-export function formatDocForEmbedding(text: string, title?: string, modelUri?: string): string {
-  const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
-  if (isQwen3EmbeddingModel(uri)) {
-    // Qwen3-Embedding: documents are raw text, no task prefix
-    return title ? `${title}\n${text}` : text;
-  }
-  return `title: ${title || "none"} | text: ${text}`;
-}
-
-// =============================================================================
-// Types
-// =============================================================================
-
-/**
- * Token with log probability
- */
-export type TokenLogProb = {
-  token: string;
-  logprob: number;
-};
-
-/**
- * Embedding result
- */
-export type EmbeddingResult = {
-  embedding: number[];
-  model: string;
-};
-
-/**
- * Generation result with optional logprobs
- */
-export type GenerateResult = {
-  text: string;
-  model: string;
-  logprobs?: TokenLogProb[];
-  done: boolean;
-};
-
-/**
- * Rerank result for a single document
- */
-export type RerankDocumentResult = {
-  file: string;
-  score: number;
-  index: number;
-};
-
-/**
- * Batch rerank result
- */
-export type RerankResult = {
-  results: RerankDocumentResult[];
-  model: string;
-};
-
-/**
- * Model info
- */
-export type ModelInfo = {
-  name: string;
-  exists: boolean;
-  path?: string;
-};
-
-/**
- * Options for embedding
- */
-export type EmbedOptions = {
-  model?: string;
-  isQuery?: boolean;
-  title?: string;
-};
-
-/**
- * Options for text generation
- */
-export type GenerateOptions = {
-  model?: string;
-  maxTokens?: number;
-  temperature?: number;
-};
-
-/**
- * Options for reranking
- */
-export type RerankOptions = {
-  model?: string;
-};
-
-/**
- * Options for LLM sessions
- */
-export type LLMSessionOptions = {
-  /** Max session duration in ms (default: 10 minutes) */
-  maxDuration?: number;
-  /** External abort signal */
-  signal?: AbortSignal;
-  /** Debug name for logging */
-  name?: string;
-};
-
-/**
- * Session interface for scoped LLM access with lifecycle guarantees
- */
-export interface ILLMSession {
-  embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
-  embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
-  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
-  rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
-  /** Whether this session is still valid (not released or aborted) */
-  readonly isValid: boolean;
-  /** Abort signal for this session (aborts on release or maxDuration) */
-  readonly signal: AbortSignal;
-}
-
-/**
- * Supported query types for different search backends
- */
-export type QueryType = 'lex' | 'vec' | 'hyde';
-
-/**
- * A single query and its target backend type
- */
-export type Queryable = {
-  type: QueryType;
-  text: string;
-};
-
-/**
- * Document to rerank
- */
-export type RerankDocument = {
-  file: string;
-  text: string;
-  title?: string;
-};
+import {
+  disposeDefaultLlm,
+} from "./llm-types.js";
+import type {
+  LLM,
+  EmbedOptions,
+  EmbeddingResult,
+  GenerateOptions,
+  GenerateResult,
+  ModelInfo,
+  Queryable,
+  QueryType,
+  RerankDocument,
+  RerankDocumentResult,
+  RerankOptions,
+  RerankResult,
+  LLMSessionOptions,
+  ILLMSession,
+} from "./llm-types.js";
 
 // =============================================================================
 // Model Configuration
@@ -362,35 +250,6 @@ export async function pullModels(
 // =============================================================================
 // LLM Interface
 // =============================================================================
-
-/**
- * Abstract LLM interface - implement this for different backends
- */
-export interface LLM {
-  /** Current embedding model name/URI */
-  readonly embedModelName: string;
-
-  /** Get embeddings for text */
-  embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
-
-  /** Batch embed multiple texts */
-  embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
-
-  /** Generate text completion */
-  generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null>;
-
-  /** Check if a model exists/is available */
-  modelExists(model: string): Promise<ModelInfo>;
-
-  /** Expand a search query into multiple variations for different backends */
-  expandQuery(query: string, options?: { context?: string; intent?: string; includeLexical?: boolean }): Promise<Queryable[]>;
-
-  /** Rerank documents by relevance to a query */
-  rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
-
-  /** Dispose of resources */
-  dispose(): Promise<void>;
-}
 
 // =============================================================================
 // node-llama-cpp Implementation
@@ -1671,33 +1530,9 @@ export function setDefaultLlamaCpp(llm: LlamaCpp | null): void {
  * Call this before process exit to prevent NAPI crashes.
  */
 export async function disposeDefaultLlamaCpp(): Promise<void> {
-  if (defaultLlm) {
-    await defaultLlm.dispose();
-    defaultLlm = null;
-  }
+  await disposeDefaultLlm();
   if (defaultLlamaCpp) {
     await defaultLlamaCpp.dispose();
     defaultLlamaCpp = null;
   }
-}
-
-// =============================================================================
-// Generic LLM singleton (can be LlamaCpp or ApiLLM)
-// =============================================================================
-
-let defaultLlm: LLM | null = null;
-
-/**
- * Set a generic LLM instance (ApiLLM or LlamaCpp).
- * When set, getDefaultLlm() returns this instead of the LlamaCpp singleton.
- */
-export function setDefaultLlm(llm: LLM | null): void {
-  defaultLlm = llm;
-}
-
-/**
- * Get the default LLM. Returns the generic LLM if set, otherwise the LlamaCpp singleton.
- */
-export function getDefaultLlm(): LLM {
-  return defaultLlm ?? getDefaultLlamaCpp();
 }

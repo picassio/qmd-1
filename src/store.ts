@@ -19,16 +19,14 @@ import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import {
-  LlamaCpp,
-  getDefaultLlamaCpp,
-  getDefaultLlm,
   formatQueryForEmbedding,
   formatDocForEmbedding,
-  withLLMSessionForLlm,
+  withLLMSessionGeneric,
+  getDefaultLlm,
   type LLM,
   type RerankDocument,
   type ILLMSession,
-} from "./llm.js";
+} from "./llm-types.js";
 import type {
   NamedCollection,
   Collection,
@@ -1438,7 +1436,7 @@ export async function generateEmbeddings(
   const embedModelUri = llm.embedModelName;
 
   // Create a session manager for this llm instance
-  const result = await withLLMSessionForLlm(llm, async (session) => {
+  const result = await withLLMSessionGeneric(llm, async (session) => {
     let chunksEmbedded = 0;
     let errors = 0;
     let bytesProcessed = 0;
@@ -1462,12 +1460,16 @@ export async function generateEmbeddings(
         if (!doc.body.trim()) continue;
 
         const title = extractTitle(doc.body, doc.path);
+        // Skip native tokenizer when using API providers — they don't expose tokenize().
+        // This avoids loading node-llama-cpp for embedding-only workflows.
+        const skipTokenizer = !('tokenize' in llm);
         const chunks = await chunkDocumentByTokens(
           doc.body,
           undefined, undefined, undefined,
           doc.path,
           options?.chunkStrategy,
           session.signal,
+          skipTokenizer,
         );
 
         for (let seq = 0; seq < chunks.length; seq++) {
@@ -2278,10 +2280,21 @@ export async function chunkDocumentByTokens(
   windowTokens: number = CHUNK_WINDOW_TOKENS,
   filepath?: string,
   chunkStrategy: ChunkStrategy = "regex",
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** When true, skip loading node-llama-cpp and use char-based estimation. */
+  skipTokenizer?: boolean,
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  // Tokenization requires LlamaCpp (local models); API LLMs don't expose tokenizers
-  const llm = getDefaultLlamaCpp();
+  // Try to get LlamaCpp for accurate tokenization. Falls back to
+  // char-based estimation (chars/4) when only API providers are available.
+  let llm: { tokenize(text: string): Promise<readonly unknown[]>; detokenize(tokens: readonly unknown[]): Promise<string> } | null = null;
+  if (!skipTokenizer) {
+    try {
+      const mod = await import("./llm.js");
+      llm = mod.getDefaultLlamaCpp();
+    } catch {
+      // node-llama-cpp not available — use char estimation below
+    }
+  }
 
   // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
   // If chunks exceed limit, they'll be re-split with actual ratio
@@ -2303,6 +2316,13 @@ export async function chunkDocumentByTokens(
 
   const pushChunkWithinTokenLimit = async (text: string, pos: number): Promise<void> => {
     if (signal?.aborted) return;
+
+    // Without a tokenizer, estimate tokens from chars and accept the chunk
+    if (!llm) {
+      const estimatedTokens = Math.ceil(text.length / 4);
+      results.push({ text, pos, tokens: estimatedTokens });
+      return;
+    }
 
     const tokens = await llm.tokenize(text);
     if (tokens.length <= maxTokens || text.length <= 1) {

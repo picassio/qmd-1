@@ -55,9 +55,9 @@ import type {
   RerankDocumentResult,
   LLMSessionOptions,
   ILLMSession,
-} from "./llm.js";
+} from "./llm-types.js";
 
-export { formatQueryForEmbedding, formatDocForEmbedding } from "./llm.js";
+export { formatQueryForEmbedding, formatDocForEmbedding } from "./llm-types.js";
 import type { ProvidersConfig, ApiFormat } from "./collections.js";
 export type { ProvidersConfig };
 
