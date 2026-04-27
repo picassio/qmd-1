@@ -1413,7 +1413,6 @@ export async function generateEmbeddings(
   options?: EmbedOptions
 ): Promise<EmbedResult> {
   const db = store.db;
-  const model = options?.model ?? DEFAULT_EMBED_MODEL;
   const now = new Date().toISOString();
   const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
   const encoder = new TextEncoder();
@@ -1431,8 +1430,11 @@ export async function generateEmbeddings(
   const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
 
-  // Use store's LlamaCpp or global singleton, wrapped in a session
+  // Use store's LlamaCpp or global singleton, wrapped in a session.
+  // Use the LLM's configured model name (respects API provider config)
+  // instead of the hardcoded DEFAULT_EMBED_MODEL.
   const llm = getLlm(store);
+  const model = options?.model ?? llm.embedModelName ?? DEFAULT_EMBED_MODEL;
   const embedModelUri = llm.embedModelName;
 
   // Create a session manager for this llm instance
