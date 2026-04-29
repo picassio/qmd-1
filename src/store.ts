@@ -1319,6 +1319,10 @@ export async function reindexCollection(
     }
   }
 
+  // Delete inactive documents before cleaning up orphaned content.
+  // Inactive docs still hold FK references to content hashes — deleting
+  // content first would violate the foreign key constraint.
+  deleteInactiveDocuments(db);
   const orphanedCleaned = cleanupOrphanedContent(db);
 
   return { indexed, updated, unchanged, removed, orphanedCleaned };
