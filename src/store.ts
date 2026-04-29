@@ -830,6 +830,19 @@ function initializeDatabase(db: Database): void {
     )
   `);
 
+  // Document metadata — parsed from YAML frontmatter for structured filtering
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS document_metadata (
+      document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+      fm_title TEXT,
+      scope TEXT,
+      tags TEXT,
+      category TEXT
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_metadata_scope ON document_metadata(scope)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_metadata_category ON document_metadata(category)`);
+
   // FTS - index filepath (collection/path), title, and content
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
@@ -1125,7 +1138,7 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionName?: string) => SearchResult[];
+  searchFTS: (query: string, limit?: number, collectionName?: string, metadataFilter?: MetadataFilter) => SearchResult[];
   searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
@@ -1235,7 +1248,19 @@ export async function reindexCollection(
     }
 
     const hash = await hashContent(content);
-    const title = extractTitle(content, relativeFile);
+
+    // Parse frontmatter for .md files — use fm title, index body without frontmatter
+    const isMd = relativeFile.endsWith('.md') || relativeFile.endsWith('.markdown');
+    const { frontmatter: fm, body: bodyWithoutFm } = isMd
+      ? parseFrontmatterFromContent(content)
+      : { frontmatter: null, body: content };
+
+    // Prefer frontmatter title over heading-extracted title
+    const title = fm?.title || extractTitle(content, relativeFile);
+
+    // Store body without frontmatter for cleaner FTS indexing
+    const indexContent = isMd && fm ? bodyWithoutFm : content;
+    const indexHash = isMd && fm ? await hashContent(indexContent) : hash;
 
     const existing = findOrMigrateLegacyDocument(db, collectionName, path);
 
@@ -1247,20 +1272,29 @@ export async function reindexCollection(
         } else {
           unchanged++;
         }
+        // Always update metadata (frontmatter may have changed independently)
+        if (fm) upsertDocumentMetadata(db, existing.id, fm);
       } else {
+        // Content changed — store both raw (for retrieval) and clean body (for FTS)
         insertContent(db, hash, content, now);
+        if (indexHash !== hash) insertContent(db, indexHash, indexContent, now);
         const stat = statSync(filepath);
         updateDocument(db, existing.id, title, hash,
           stat ? new Date(stat.mtime).toISOString() : now);
+        if (fm) upsertDocumentMetadata(db, existing.id, fm);
         updated++;
       }
     } else {
       indexed++;
       insertContent(db, hash, content, now);
+      if (indexHash !== hash) insertContent(db, indexHash, indexContent, now);
       const stat = statSync(filepath);
       insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
+      // Get the newly inserted document ID for metadata
+      const newDoc = findOrMigrateLegacyDocument(db, collectionName, path);
+      if (newDoc && fm) upsertDocumentMetadata(db, newDoc.id, fm);
     }
 
     processed++;
@@ -1645,7 +1679,7 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string) => searchFTS(db, query, limit, collectionName),
+    searchFTS: (query: string, limit?: number, collectionName?: string, metadataFilter?: MetadataFilter) => searchFTS(db, query, limit, collectionName, metadataFilter),
     searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding),
 
     // Query expansion & reranking
@@ -2068,6 +2102,128 @@ export function extractTitle(content: string, filename: string): string {
     if (title) return title;
   }
   return filename.replace(/\.[^.]+$/, "").split("/").pop() || filename;
+}
+
+// =============================================================================
+// Frontmatter parsing
+// =============================================================================
+
+const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
+
+export interface ParsedFrontmatter {
+  title?: string;
+  scope?: string[];   // e.g. ["pi-para", "qmd"]
+  tags?: string[];    // e.g. ["daemon", "architecture"]
+  category?: string;  // e.g. "resources"
+  links?: string[];   // e.g. ["pi-para-daemon", "qmd-fork"]
+}
+
+/**
+ * Parse YAML frontmatter from markdown content.
+ * Returns the parsed metadata and the body with frontmatter stripped.
+ *
+ * Handles standard YAML frontmatter delimited by --- lines.
+ * Only parses the specific fields we care about — ignores the rest.
+ * No external YAML dependency — uses simple line-by-line parsing.
+ */
+export function parseFrontmatterFromContent(content: string): {
+  frontmatter: ParsedFrontmatter | null;
+  body: string;
+} {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return { frontmatter: null, body: content };
+
+  const yamlBlock = match[1]!;
+  const body = content.slice(match[0]!.length).replace(/^\n+/, "");
+  const fm: ParsedFrontmatter = {};
+
+  // Simple line-by-line YAML parser for flat fields + arrays
+  let currentKey: string | null = null;
+  let currentArray: string[] | null = null;
+
+  for (const line of yamlBlock.split("\n")) {
+    // Array item: "  - value"
+    const arrayMatch = line.match(/^\s+-\s+(.+)/);
+    if (arrayMatch && currentArray) {
+      currentArray.push(arrayMatch[1]!.trim().replace(/^['"]|['"]$/g, ""));
+      continue;
+    }
+
+    // End previous array
+    if (currentArray && currentKey) {
+      setFmField(fm, currentKey, currentArray);
+      currentArray = null;
+      currentKey = null;
+    }
+
+    // Key-value: "key: value" or "key:"
+    const kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)/);
+    if (!kvMatch) continue;
+
+    const key = kvMatch[1]!;
+    const value = (kvMatch[2] ?? "").trim().replace(/^['"]|['"]$/g, "");
+
+    if (!value) {
+      // Start of array
+      currentKey = key;
+      currentArray = [];
+    } else {
+      setFmField(fm, key, value);
+    }
+  }
+
+  // Flush last array
+  if (currentArray && currentKey) {
+    setFmField(fm, currentKey, currentArray);
+  }
+
+  return { frontmatter: Object.keys(fm).length > 0 ? fm : null, body };
+}
+
+function setFmField(fm: ParsedFrontmatter, key: string, value: string | string[]): void {
+  switch (key) {
+    case "title":
+      if (typeof value === "string") fm.title = value;
+      break;
+    case "scope":
+      if (Array.isArray(value)) fm.scope = value;
+      break;
+    case "tags":
+      if (Array.isArray(value)) fm.tags = value;
+      break;
+    case "para":
+    case "category":
+      if (typeof value === "string") fm.category = value;
+      break;
+    case "links":
+      if (Array.isArray(value)) fm.links = value;
+      break;
+  }
+}
+
+// =============================================================================
+// Document metadata operations
+// =============================================================================
+
+function upsertDocumentMetadata(
+  db: Database,
+  documentId: number,
+  fm: ParsedFrontmatter,
+): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO document_metadata (document_id, fm_title, scope, tags, category)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    documentId,
+    fm.title ?? null,
+    fm.scope ? JSON.stringify(fm.scope) : null,
+    fm.tags ? JSON.stringify(fm.tags) : null,
+    fm.category ?? null,
+  );
+}
+
+function deleteDocumentMetadata(db: Database, documentId: number): void {
+  db.prepare(`DELETE FROM document_metadata WHERE document_id = ?`).run(documentId);
 }
 
 // =============================================================================
@@ -3046,7 +3202,17 @@ export function validateLexQuery(query: string): string | null {
   return null;
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string): SearchResult[] {
+/** Metadata filter for frontmatter-aware search. */
+export interface MetadataFilter {
+  /** Filter by scope (page must have this scope value) */
+  scope?: string;
+  /** Filter by tag (page must have this tag) */
+  tag?: string;
+  /** Filter by PARA category */
+  category?: string;
+}
+
+export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string, metadataFilter?: MetadataFilter): SearchResult[] {
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -3057,10 +3223,10 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
   // query into a 17-second query on large collections.
   const params: (string | number)[] = [ftsQuery];
 
-  // When filtering by collection, fetch extra candidates from the FTS index
-  // since some will be filtered out. Without a collection filter we can
-  // fetch exactly the requested limit.
-  const ftsLimit = collectionName ? limit * 10 : limit;
+  // When filtering by collection or metadata, fetch extra candidates from FTS
+  // since some will be filtered out.
+  const hasFilters = !!collectionName || !!metadataFilter;
+  const ftsLimit = hasFilters ? limit * 10 : limit;
 
   let sql = `
     WITH fts_matches AS (
@@ -3076,20 +3242,40 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       d.title,
       content.doc as body,
       d.hash,
-      fm.bm25_score
-    FROM fts_matches fm
-    JOIN documents d ON d.id = fm.rowid
+      fts.bm25_score
+    FROM fts_matches fts
+    JOIN documents d ON d.id = fts.rowid
     JOIN content ON content.hash = d.hash
-    WHERE d.active = 1
   `;
+
+  // Join metadata table if filtering by frontmatter fields
+  if (metadataFilter && (metadataFilter.scope || metadataFilter.tag || metadataFilter.category)) {
+    sql += ` JOIN document_metadata dm ON dm.document_id = d.id`;
+  }
+
+  sql += ` WHERE d.active = 1`;
 
   if (collectionName) {
     sql += ` AND d.collection = ?`;
     params.push(String(collectionName));
   }
 
+  // Metadata filters — use JSON functions for scope/tags arrays
+  if (metadataFilter?.scope) {
+    sql += ` AND EXISTS (SELECT 1 FROM json_each(dm.scope) WHERE json_each.value = ?)`;
+    params.push(metadataFilter.scope);
+  }
+  if (metadataFilter?.tag) {
+    sql += ` AND EXISTS (SELECT 1 FROM json_each(dm.tags) WHERE json_each.value = ?)`;
+    params.push(metadataFilter.tag);
+  }
+  if (metadataFilter?.category) {
+    sql += ` AND dm.category = ?`;
+    params.push(metadataFilter.category);
+  }
+
   // bm25 lower is better; sort ascending.
-  sql += ` ORDER BY fm.bm25_score ASC LIMIT ?`;
+  sql += ` ORDER BY fts.bm25_score ASC LIMIT ?`;
   params.push(limit);
 
   const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number }[];

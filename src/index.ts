@@ -63,6 +63,7 @@ import {
   type EmbedProgress,
   type EmbedResult,
   type ChunkStrategy,
+  type MetadataFilter,
 } from "./store.js";
 import type { LLM } from "./llm-types.js";
 import { ApiLLM, hasApiProviders } from "./llm-api.js";
@@ -110,10 +111,10 @@ export type { InternalStore };
 
 // Re-export utility functions and types used by frontends
 export { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES };
-export type { ChunkStrategy } from "./store.js";
+export type { ChunkStrategy, MetadataFilter, ParsedFrontmatter } from "./store.js";
 
-// Re-export getDefaultDbPath for CLI/MCP that need the default database location
-export { getDefaultDbPath } from "./store.js";
+// Re-export getDefaultDbPath and frontmatter parsing for consumers
+export { getDefaultDbPath, parseFrontmatterFromContent } from "./store.js";
 
 // Re-export Maintenance class for CLI housekeeping operations
 export { Maintenance } from "./maintenance.js";
@@ -172,6 +173,8 @@ export interface SearchOptions {
 export interface LexSearchOptions {
   limit?: number;
   collection?: string;
+  /** Filter by frontmatter metadata (scope, tag, category). Requires frontmatter-indexed .md files. */
+  metadata?: MetadataFilter;
 }
 
 /**
@@ -422,7 +425,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         chunkStrategy: opts.chunkStrategy,
       });
     },
-    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection),
+    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection, opts?.metadata),
     searchVector: async (q, opts) => internal.searchVec(q, DEFAULT_EMBED_MODEL, opts?.limit, opts?.collection),
     expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.intent),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
