@@ -113,8 +113,8 @@ export type { InternalStore };
 export { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES };
 export type { ChunkStrategy, MetadataFilter, ParsedFrontmatter } from "./store.js";
 
-// Re-export getDefaultDbPath and frontmatter parsing for consumers
-export { getDefaultDbPath, parseFrontmatterFromContent } from "./store.js";
+// Re-export getDefaultDbPath, frontmatter parsing, and wikilink extraction for consumers
+export { getDefaultDbPath, parseFrontmatterFromContent, extractWikilinks } from "./store.js";
 
 // Re-export Maintenance class for CLI housekeeping operations
 export { Maintenance } from "./maintenance.js";
@@ -175,6 +175,8 @@ export interface LexSearchOptions {
   collection?: string;
   /** Filter by frontmatter metadata (scope, tag, category). Requires frontmatter-indexed .md files. */
   metadata?: MetadataFilter;
+  /** Enable graph-boosted search: expand results with wikilink-connected pages (default: false) */
+  graphBoost?: boolean;
 }
 
 /**
@@ -425,7 +427,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         chunkStrategy: opts.chunkStrategy,
       });
     },
-    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection, opts?.metadata),
+    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection, opts?.metadata, opts?.graphBoost),
     searchVector: async (q, opts) => internal.searchVec(q, DEFAULT_EMBED_MODEL, opts?.limit, opts?.collection),
     expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.intent),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),

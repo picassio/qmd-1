@@ -843,6 +843,9 @@ function initializeDatabase(db: Database): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_metadata_scope ON document_metadata(scope)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_metadata_category ON document_metadata(category)`);
 
+  // Document wikilinks — extracted from [[slug]] references in markdown body
+  ensureLinkTable(db);
+
   // FTS - index filepath (collection/path), title, and content
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
@@ -1138,7 +1141,7 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionName?: string, metadataFilter?: MetadataFilter) => SearchResult[];
+  searchFTS: (query: string, limit?: number, collectionName?: string, metadataFilter?: MetadataFilter, graphBoost?: boolean) => SearchResult[];
   searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
@@ -1274,6 +1277,8 @@ export async function reindexCollection(
         }
         // Always update metadata (frontmatter may have changed independently)
         if (fm) upsertDocumentMetadata(db, existing.id, fm);
+        // Always update wikilinks from body content
+        if (isMd) upsertDocumentLinks(db, existing.id, bodyWithoutFm);
       } else {
         // Content changed — store both raw (for retrieval) and clean body (for FTS)
         insertContent(db, hash, content, now);
@@ -1282,6 +1287,8 @@ export async function reindexCollection(
         updateDocument(db, existing.id, title, hash,
           stat ? new Date(stat.mtime).toISOString() : now);
         if (fm) upsertDocumentMetadata(db, existing.id, fm);
+        // Update wikilinks from body content
+        if (isMd) upsertDocumentLinks(db, existing.id, bodyWithoutFm);
         updated++;
       }
     } else {
@@ -1292,9 +1299,10 @@ export async function reindexCollection(
       insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
-      // Get the newly inserted document ID for metadata
+      // Get the newly inserted document ID for metadata and links
       const newDoc = findOrMigrateLegacyDocument(db, collectionName, path);
       if (newDoc && fm) upsertDocumentMetadata(db, newDoc.id, fm);
+      if (newDoc && isMd) upsertDocumentLinks(db, newDoc.id, bodyWithoutFm);
     }
 
     processed++;
@@ -1679,7 +1687,7 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string, metadataFilter?: MetadataFilter) => searchFTS(db, query, limit, collectionName, metadataFilter),
+    searchFTS: (query: string, limit?: number, collectionName?: string, metadataFilter?: MetadataFilter, graphBoost?: boolean) => searchFTS(db, query, limit, collectionName, metadataFilter, graphBoost),
     searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding),
 
     // Query expansion & reranking
@@ -2204,6 +2212,48 @@ function setFmField(fm: ParsedFrontmatter, key: string, value: string | string[]
 // =============================================================================
 // Document metadata operations
 // =============================================================================
+
+/**
+ * Ensure the document_links table exists for wikilink graph tracking.
+ */
+function ensureLinkTable(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS document_links (
+      source_id INTEGER NOT NULL REFERENCES documents(id),
+      target_slug TEXT NOT NULL,
+      UNIQUE(source_id, target_slug)
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_links_target ON document_links(target_slug)`);
+}
+
+/**
+ * Extract unique wikilink slugs from markdown body.
+ * Matches [[slug]] patterns and returns deduplicated slugs.
+ */
+export function extractWikilinks(body: string): string[] {
+  const re = /\[\[([^\]]+)\]\]/g;
+  const slugs = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    slugs.add(match[1]!);
+  }
+  return Array.from(slugs);
+}
+
+/**
+ * Update the document_links table for a given document.
+ * Deletes old links, extracts wikilinks from body, inserts new links.
+ */
+function upsertDocumentLinks(db: Database, documentId: number, body: string): void {
+  db.prepare(`DELETE FROM document_links WHERE source_id = ?`).run(documentId);
+  const slugs = extractWikilinks(body);
+  if (slugs.length === 0) return;
+  const insert = db.prepare(`INSERT OR IGNORE INTO document_links (source_id, target_slug) VALUES (?, ?)`);
+  for (const slug of slugs) {
+    insert.run(documentId, slug);
+  }
+}
 
 function upsertDocumentMetadata(
   db: Database,
@@ -3212,7 +3262,7 @@ export interface MetadataFilter {
   category?: string;
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string, metadataFilter?: MetadataFilter): SearchResult[] {
+export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string, metadataFilter?: MetadataFilter, graphBoost: boolean = false): SearchResult[] {
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
 
@@ -3279,7 +3329,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
   params.push(limit);
 
   const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number }[];
-  return rows.map(row => {
+  const results: SearchResult[] = rows.map(row => {
     const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
     // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
     // FTS5 BM25 scores are negative (e.g., -10 is strong, -2 is weak).
@@ -3301,6 +3351,116 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       source: "fts" as const,
     };
   });
+
+  // Graph boost: expand results with linked pages
+  if (graphBoost && results.length > 0) {
+    const expanded = graphExpand(db, results, limit);
+    results.push(...expanded);
+  }
+
+  return results;
+}
+
+/**
+ * Expand search results by following wikilink graph edges.
+ * Returns documents linked to/from the top results that aren't already in the result set.
+ * Expansion scores are capped below the lowest direct match score.
+ */
+export function graphExpand(db: Database, topResults: SearchResult[], limit: number): SearchResult[] {
+  if (topResults.length === 0) return [];
+
+  // Collect document IDs for top results
+  const topFilepaths = topResults.map(r => r.filepath);
+  const placeholders = topFilepaths.map(() => '?').join(',');
+
+  const idRows = db.prepare(`
+    SELECT id, 'qmd://' || collection || '/' || path as filepath
+    FROM documents
+    WHERE ('qmd://' || collection || '/' || path) IN (${placeholders}) AND active = 1
+  `).all(...topFilepaths) as { id: number; filepath: string }[];
+
+  if (idRows.length === 0) return [];
+
+  const sourceIds = idRows.map(r => r.id);
+  const idPlaceholders = sourceIds.map(() => '?').join(',');
+
+  // Forward links: pages that top results link TO
+  const forwardSlugs = db.prepare(`
+    SELECT DISTINCT target_slug FROM document_links WHERE source_id IN (${idPlaceholders})
+  `).all(...sourceIds) as { target_slug: string }[];
+
+  // Build slugs for top results (extract from path: last segment without extension)
+  const topSlugs = topFilepaths.map(fp => {
+    const path = fp.replace(/^qmd:\/\/[^/]+\//, '');
+    const basename = path.split('/').pop() || '';
+    return basename.replace(/\.[^.]+$/, '');
+  });
+  const topSlugPlaceholders = topSlugs.map(() => '?').join(',');
+
+  // Reverse links: pages that link TO any of the top result slugs
+  const reverseRows = topSlugs.length > 0
+    ? db.prepare(`
+        SELECT DISTINCT source_id FROM document_links WHERE target_slug IN (${topSlugPlaceholders})
+      `).all(...topSlugs) as { source_id: number }[]
+    : [];
+
+  // Collect candidate document IDs (excluding those already in results)
+  const topIdSet = new Set(idRows.map(r => r.id));
+  const candidateIds = new Set<number>();
+
+  // Forward: look up documents by slug (path ending with slug.ext)
+  for (const { target_slug } of forwardSlugs) {
+    const docs = db.prepare(`
+      SELECT id FROM documents WHERE active = 1 AND path LIKE ?
+    `).all(`%${target_slug}.md`) as { id: number }[];
+    for (const d of docs) {
+      if (!topIdSet.has(d.id)) candidateIds.add(d.id);
+    }
+  }
+
+  // Reverse: add source documents
+  for (const { source_id } of reverseRows) {
+    if (!topIdSet.has(source_id)) candidateIds.add(source_id);
+  }
+
+  if (candidateIds.size === 0) return [];
+
+  // Score expansion candidates at 0.3 * min score of direct results
+  const minScore = Math.min(...topResults.map(r => r.score));
+  const expansionScore = 0.3 * minScore;
+
+  // Look up candidate documents
+  const candidateIdArr = Array.from(candidateIds).slice(0, limit);
+  const candidatePlaceholders = candidateIdArr.map(() => '?').join(',');
+
+  const candidateRows = db.prepare(`
+    SELECT
+      'qmd://' || d.collection || '/' || d.path as filepath,
+      d.collection || '/' || d.path as display_path,
+      d.title,
+      content.doc as body,
+      d.hash,
+      d.collection,
+      d.modified_at
+    FROM documents d
+    JOIN content ON content.hash = d.hash
+    WHERE d.id IN (${candidatePlaceholders}) AND d.active = 1
+  `).all(...candidateIdArr) as { filepath: string; display_path: string; title: string; body: string; hash: string; collection: string; modified_at: string }[];
+
+  return candidateRows.map(row => ({
+    filepath: row.filepath,
+    displayPath: row.display_path,
+    title: row.title,
+    hash: row.hash,
+    docid: getDocid(row.hash),
+    collectionName: row.collection,
+    modifiedAt: row.modified_at || "",
+    bodyLength: row.body.length,
+    body: row.body,
+    context: getContextForFile(db, row.filepath),
+    score: expansionScore,
+    source: "fts" as const,
+  }));
 }
 
 // =============================================================================
