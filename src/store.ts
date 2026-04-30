@@ -1996,6 +1996,15 @@ export function deleteLLMCache(db: Database): number {
  * Returns the number of inactive documents deleted.
  */
 export function deleteInactiveDocuments(db: Database): number {
+  // Delete links and metadata for inactive documents first to avoid FK violations.
+  // The document_links and document_metadata tables reference documents(id)
+  // but existing databases may lack ON DELETE CASCADE.
+  db.exec(`
+    DELETE FROM document_links WHERE source_id IN (SELECT id FROM documents WHERE active = 0)
+  `);
+  db.exec(`
+    DELETE FROM document_metadata WHERE document_id IN (SELECT id FROM documents WHERE active = 0)
+  `);
   const result = db.prepare(`DELETE FROM documents WHERE active = 0`).run();
   return result.changes;
 }
@@ -2223,7 +2232,7 @@ function setFmField(fm: ParsedFrontmatter, key: string, value: string | string[]
 function ensureLinkTable(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS document_links (
-      source_id INTEGER NOT NULL REFERENCES documents(id),
+      source_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
       target_slug TEXT NOT NULL,
       UNIQUE(source_id, target_slug)
     )
