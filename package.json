@@ -1,5 +1,5 @@
 {
-  "name": "@picassio/qmd",
+  "name": "qmd-engine",
   "version": "2.3.3",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
@@ -34,7 +34,6 @@
     "release": "./scripts/release.sh"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
     "access": "public"
   },
   "repository": {
@@ -110,5 +109,8 @@
     "llm"
   ],
   "author": "Tobi Lutke <tobi@lutke.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "ublishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  }
 }
