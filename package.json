@@ -1,6 +1,6 @@
 {
   "name": "qmd-engine",
-  "version": "2.3.3",
+  "version": "2.4.0",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
   "main": "dist/index.js",
@@ -31,10 +31,11 @@
     "vsearch": "tsx src/cli/qmd.ts vsearch",
     "rerank": "tsx src/cli/qmd.ts rerank",
     "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
-    "release": "./scripts/release.sh"
+    "release": "./scripts/release.sh",
+    "prepublishOnly": "npm run build"
   },
   "publishConfig": {
-    "access": "public"
+    "registry": "https://registry.npmjs.org/"
   },
   "repository": {
     "type": "git",
@@ -73,18 +74,6 @@
     "tsx": "4.21.0",
     "vitest": "3.2.4"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "node-llama-cpp",
-      "tree-sitter-go",
-      "tree-sitter-javascript",
-      "tree-sitter-python",
-      "tree-sitter-rust",
-      "tree-sitter-typescript"
-    ]
-  },
   "peerDependencies": {
     "typescript": "^5.9.3"
   },
@@ -109,8 +98,5 @@
     "llm"
   ],
   "author": "Tobi Lutke <tobi@lutke.com>",
-  "license": "MIT",
-  "ublishConfig": {
-    "registry": "https://registry.npmjs.org/"
-  }
+  "license": "MIT"
 }

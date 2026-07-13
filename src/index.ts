@@ -66,6 +66,19 @@ import {
   type MetadataFilter,
 } from "./store.js";
 import type { LLM } from "./llm-types.js";
+// Re-export the adapter contract so consumers can implement StoreOptions.llm
+export type {
+	LLM,
+	EmbedOptions,
+	EmbeddingResult,
+	GenerateOptions,
+	GenerateResult,
+	ModelInfo,
+	Queryable,
+	RerankDocument,
+	RerankOptions,
+	RerankResult,
+} from "./llm-types.js";
 import { ApiLLM, hasApiProviders } from "./llm-api.js";
 import {
   setConfigSource,
@@ -204,6 +217,8 @@ export interface ExpandQueryOptions {
 export interface StoreOptions {
   /** Path to the SQLite database file */
   dbPath: string;
+  /** Inject a custom LLM adapter (skips ApiLLM and node-llama-cpp entirely). */
+  llm?: LLM;
   /** Path to a YAML config file (mutually exclusive with `config`) */
   configPath?: string;
   /** Inline collection config (mutually exclusive with `configPath`) */
@@ -371,7 +386,9 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
   // Create LLM instance — API providers if configured, else local GGUF.
   let llm: LLM;
-  if (hasApiProviders(config?.providers)) {
+  if (options.llm) {
+    llm = options.llm;
+  } else if (hasApiProviders(config?.providers)) {
     llm = new ApiLLM({ providers: config!.providers });
   } else {
     // Lazy-load node-llama-cpp only when no API providers are configured.
