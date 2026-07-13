@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-13
+
+### Features
+
+- `StoreOptions.llm`: inject a custom LLM adapter into `createStore()`,
+  bypassing `ApiLLM` and `node-llama-cpp` entirely. The adapter contract
+  types (`LLM`, embed/generate/rerank options and results, `ModelInfo`,
+  `Queryable`) are re-exported from the package root.
+
+### Build
+
+- pnpm 11+ build-script approvals moved to `pnpm-workspace.yaml`; native
+  builds restricted to `better-sqlite3` + `esbuild` (node-llama-cpp and
+  tree-sitter grammars ignored for BM25-only embedding use).
+- `prepublishOnly` runs the build so published `dist/` can never be stale.
+
+### Fixes
+
+- `package.json`: fix `ublishConfig` typo — `publishConfig` was silently
+  ignored.
+
 ### Fixes
 
 - GPU: respect explicit `QMD_LLAMA_GPU=metal|vulkan|cuda` backend overrides instead of always using auto GPU selection. #529
