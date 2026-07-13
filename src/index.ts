@@ -393,7 +393,20 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   } else {
     // Lazy-load node-llama-cpp only when no API providers are configured.
     // This avoids triggering the Vulkan/CMake build on machines without GPU.
-    const { LlamaCpp } = await import("./llm.js");
+    // node-llama-cpp is an OPTIONAL peer dependency: our deployments always
+    // use remote LLMs (StoreOptions.llm or config.providers), so local GGUF
+    // mode requires installing it explicitly.
+    let LlamaCpp: typeof import("./llm.js").LlamaCpp;
+    try {
+      ({ LlamaCpp } = await import("./llm.js"));
+    } catch (err) {
+      throw new Error(
+        "Local GGUF mode requires the optional peer dependency node-llama-cpp, which is not installed. " +
+          "Either configure remote API providers (config.providers), inject a custom adapter (StoreOptions.llm), " +
+          "or `npm install node-llama-cpp` to use local models. " +
+          `(${(err as Error).message})`,
+      );
+    }
     llm = new LlamaCpp({
       embedModel: config?.models?.embed,
       generateModel: config?.models?.generate,

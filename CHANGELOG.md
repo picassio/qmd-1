@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-07-13
+
+### Changed
+
+- **`node-llama-cpp` is now an optional peer dependency** (was a hard
+  dependency). Our deployments always use remote LLMs — via
+  `config.providers` (ApiLLM) or an injected `StoreOptions.llm` adapter —
+  so consumers no longer download the native llama.cpp toolchain.
+  Local GGUF mode still works: `npm install node-llama-cpp` alongside
+  qmd-engine; attempting local mode without it now throws an actionable
+  error instead of a resolution failure.
+
 ## [2.4.0] - 2026-07-13
 
 ### Features

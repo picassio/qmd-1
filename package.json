@@ -1,6 +1,6 @@
 {
   "name": "qmd-engine",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
   "main": "dist/index.js",
@@ -49,7 +49,6 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "better-sqlite3": "12.8.0",
     "fast-glob": "3.3.3",
-    "node-llama-cpp": "3.18.1",
     "picomatch": "4.0.4",
     "sqlite-vec": "0.1.9",
     "web-tree-sitter": "0.26.7",
@@ -72,10 +71,12 @@
     "@types/bun": "^1.3.13",
     "@types/picomatch": "^4.0.3",
     "tsx": "4.21.0",
-    "vitest": "3.2.4"
+    "vitest": "3.2.4",
+    "node-llama-cpp": "3.18.1"
   },
   "peerDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "node-llama-cpp": "^3.18.1"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -98,5 +99,10 @@
     "llm"
   ],
   "author": "Tobi Lutke <tobi@lutke.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "peerDependenciesMeta": {
+    "node-llama-cpp": {
+      "optional": true
+    }
+  }
 }
