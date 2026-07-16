@@ -130,7 +130,13 @@ async function runBuiltConfiguredLocal(args: string[]) {
     QMD_CONFIG_DIR: localConfigDir,
     PWD: localDocsDir,
     QMD_COMPAT_MODE: "",
+    QMD_EMBED_URL: "",
+    QMD_EMBED_KEY: "",
     QMD_EMBED_MODEL: "",
+    QMD_CHAT_URL: "",
+    QMD_CHAT_KEY: "",
+    QMD_RERANK_URL: "",
+    QMD_RERANK_KEY: "",
   });
 }
 
@@ -260,7 +266,7 @@ describe("built native-free CLI", () => {
   test("configured local model scopes native-free status and indexing notices", async () => {
     const status = await runBuiltConfiguredLocal(["status"]);
     expect(status.exitCode, status.stderr).toBe(0);
-    expect(status.stdout).not.toContain("Pending:");
+    expect(status.stdout, status.stderr).not.toContain("Pending:");
     expect(status.stderr).not.toContain("native package resolution denied");
 
     const update = await runBuiltConfiguredLocal(["update"]);

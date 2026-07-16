@@ -24,6 +24,7 @@ import {
   findDocumentByDocid,
   isDocid,
   matchFilesByGlob,
+  getHashesNeedingEmbedding,
   clearAllEmbeddings,
   insertEmbedding,
   getStatus,
@@ -35,6 +36,7 @@ import {
   getCacheKey,
   getCachedResult,
   setCachedResult,
+  getIndexHealth,
   parseVirtualPath,
   buildVirtualPath,
   isVirtualPath,
@@ -166,6 +168,14 @@ async function ensureLlmSelected(): Promise<SelectedLlm> {
   return selected;
 }
 
+/** Resolve embedding identity for DB-only checks without loading the local runtime. */
+function getActiveEmbedModel(): string {
+  return selectedLlm?.llm.embedModelName
+    || loadedConfig?.models?.embed
+    || process.env.QMD_EMBED_MODEL
+    || DEFAULT_EMBED_MODEL;
+}
+
 function getDb(): Database {
   return getStore().db;
 }
@@ -269,7 +279,7 @@ function formatETA(seconds: number): string {
 
 // Check index health and print warnings/tips
 function checkIndexHealth(storeInstance: ReturnType<typeof createStore>): void {
-  const { needsEmbedding, totalDocs, daysStale } = storeInstance.getIndexHealth();
+  const { needsEmbedding, totalDocs, daysStale } = getIndexHealth(storeInstance.db, getActiveEmbedModel());
 
   // Warn if many docs need embedding
   if (needsEmbedding > 0) {
@@ -368,7 +378,7 @@ async function showStatus(): Promise<void> {
   // Overall stats
   const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number };
   const vectorCount = db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number };
-  const needsEmbedding = storeInstance.getHashesNeedingEmbedding();
+  const needsEmbedding = getHashesNeedingEmbedding(db, getActiveEmbedModel());
 
   // Most recent update across all collections
   const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
@@ -661,7 +671,7 @@ async function updateCollections(): Promise<void> {
   }
 
   // Check if any documents need embedding (show once at end)
-  const needsEmbedding = storeInstance.getHashesNeedingEmbedding();
+  const needsEmbedding = getHashesNeedingEmbedding(db, getActiveEmbedModel());
   closeDb();
 
   console.log(`${c.green}✓ All collections updated.${c.reset}`);
@@ -1675,7 +1685,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const orphanedContent = cleanupOrphanedContent(db);
 
   // Check if vector index needs updating
-  const needsEmbedding = storeInstance.getHashesNeedingEmbedding();
+  const needsEmbedding = getHashesNeedingEmbedding(db, getActiveEmbedModel());
 
   progress.clear();
   console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
