@@ -13,6 +13,16 @@
 
 export const isBun = typeof globalThis.Bun !== "undefined";
 
+export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 120_000;
+
+/** Resolve the per-connection SQLite busy timeout from the environment. */
+export function resolveSqliteBusyTimeout(value = process.env.QMD_SQLITE_BUSY_TIMEOUT): number {
+  if (value === undefined || value.trim() === "") return DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
 let _Database: any;
 let _sqliteVecLoad: ((db: any) => void) | null;
 
@@ -59,7 +69,15 @@ if (isBun) {
  * Open a SQLite database. Works with both bun:sqlite and better-sqlite3.
  */
 export function openDatabase(path: string): Database {
-  return new _Database(path) as Database;
+  const db = new _Database(path) as Database;
+  try {
+    // Apply this before callers can perform schema setup or any other writes.
+    db.exec(`PRAGMA busy_timeout = ${resolveSqliteBusyTimeout()}`);
+    return db;
+  } catch (error) {
+    try { db.close(); } catch {}
+    throw error;
+  }
 }
 
 /**

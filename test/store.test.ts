@@ -17,6 +17,7 @@ import * as llmModule from "../src/llm.js";
 import { disposeDefaultLlamaCpp, setDefaultLlamaCpp } from "../src/llm.js";
 import {
   createStore,
+  _resetProductionModeForTesting,
   verifySqliteVecLoaded,
   getDefaultDbPath,
   homedir,
@@ -277,7 +278,9 @@ afterAll(async () => {
 
 describe("Store Creation", () => {
   test("createStore throws without explicit path in test mode", () => {
-    // In test mode, createStore without path should throw to prevent accidental writes
+    // Bun runs test files in one process, so reset production mode that CLI/MCP
+    // suites may have enabled before this isolation assertion.
+    _resetProductionModeForTesting();
     const originalIndexPath = process.env.INDEX_PATH;
     delete process.env.INDEX_PATH;
 

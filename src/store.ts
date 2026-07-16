@@ -11,7 +11,7 @@
  *   const store = createStore();
  */
 
-import { openDatabase, loadSqliteVec } from "./db.js";
+import { openDatabase, loadSqliteVec, resolveSqliteBusyTimeout } from "./db.js";
 import type { Database } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
@@ -733,6 +733,41 @@ export function verifySqliteVecLoaded(db: Database): void {
 
 let _sqliteVecAvailable: boolean | null = null;
 
+function isSqliteBusyError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+  return code === "SQLITE_BUSY" || code === "SQLITE_BUSY_SNAPSHOT" || /database is (?:busy|locked)/i.test(getErrorMessage(error));
+}
+
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** journal_mode migration can return SQLITE_BUSY without invoking SQLite's busy handler. */
+function enableWalWithRetry(db: Database): void {
+  const timeout = resolveSqliteBusyTimeout();
+  const deadline = Date.now() + timeout;
+  try {
+    for (;;) {
+      const remaining = Math.max(0, deadline - Date.now());
+      // A retry must not receive a fresh full busy-handler budget.
+      db.exec(`PRAGMA busy_timeout = ${Math.min(timeout, remaining)}`);
+      try {
+        db.exec("PRAGMA journal_mode = WAL");
+        return;
+      } catch (error) {
+        if (!isSqliteBusyError(error) || timeout === 0 || remaining <= 0) throw error;
+        sleepSync(Math.min(25, remaining));
+      }
+    }
+  } finally {
+    // Preserve the resolved per-connection setting after migration attempts.
+    db.exec(`PRAGMA busy_timeout = ${timeout}`);
+  }
+}
+
 function initializeDatabase(db: Database): void {
   try {
     loadSqliteVec(db);
@@ -745,9 +780,13 @@ function initializeDatabase(db: Database): void {
     _sqliteVecUnavailableReason = getErrorMessage(err);
     console.warn(_sqliteVecUnavailableReason);
   }
-  db.exec("PRAGMA journal_mode = WAL");
+  enableWalWithRetry(db);
   db.exec("PRAGMA foreign_keys = ON");
 
+  // Serialize all idempotent schema setup so concurrent cold and warm opens
+  // cannot interleave migrations, trigger creation, or virtual-table changes.
+  db.exec("BEGIN IMMEDIATE");
+  try {
   // Drop legacy tables that are now managed in YAML
   db.exec(`DROP TABLE IF EXISTS path_contexts`);
   db.exec(`DROP TABLE IF EXISTS collections`);
@@ -808,6 +847,21 @@ function initializeDatabase(db: Database): void {
       PRIMARY KEY (hash, seq)
     )
   `);
+
+  // Durable expected-chunk metadata. Existing content_vectors rows deliberately
+  // receive no synthetic metadata: legacy completion cannot be proven safely and
+  // those hashes will be re-embedded once for the active model.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS embedding_documents (
+      hash TEXT NOT NULL REFERENCES content(hash) ON DELETE CASCADE,
+      model TEXT NOT NULL,
+      total_chunks INTEGER NOT NULL CHECK(total_chunks > 0),
+      embedded_at TEXT NOT NULL,
+      completed_at TEXT,
+      PRIMARY KEY (hash, model)
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_embedding_documents_model ON embedding_documents(model)`);
 
   // Store collections — makes the DB self-contained (no external config needed)
   db.exec(`
@@ -891,6 +945,11 @@ function initializeDatabase(db: Database): void {
       WHERE new.active = 1;
     END
   `);
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
 }
 
 // =============================================================================
@@ -1387,16 +1446,52 @@ function resolveEmbedOptions(options?: EmbedOptions): Required<Pick<EmbedOptions
   };
 }
 
-function getPendingEmbeddingDocs(db: Database): PendingEmbeddingDoc[] {
+function hasVectorTable(db: Database): boolean {
+  return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'`).get();
+}
+
+function hasEmbeddingMetadataTable(db: Database): boolean {
+  return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embedding_documents'`).get();
+}
+
+/**
+ * Select active hashes whose expected chunk set is not provably complete for
+ * the requested model. Legacy rows without metadata are intentionally pending.
+ */
+function getPendingEmbeddingDocs(db: Database, model: string): PendingEmbeddingDoc[] {
+  if (!hasVectorTable(db) || !hasEmbeddingMetadataTable(db)) {
+    return db.prepare(`
+      SELECT d.hash, MIN(d.path) AS path, length(CAST(c.doc AS BLOB)) AS bytes
+      FROM documents d
+      JOIN content c ON d.hash = c.hash
+      WHERE d.active = 1
+      GROUP BY d.hash
+      ORDER BY MIN(d.path)
+    `).all() as PendingEmbeddingDoc[];
+  }
+
   return db.prepare(`
-    SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
+    SELECT d.hash, MIN(d.path) AS path, length(CAST(c.doc AS BLOB)) AS bytes
     FROM documents d
     JOIN content c ON d.hash = c.hash
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
+    LEFT JOIN embedding_documents em ON em.hash = d.hash AND em.model = ?
+    WHERE d.active = 1 AND (
+      em.hash IS NULL
+      OR em.completed_at IS NULL
+      OR em.total_chunks < 1
+      OR (SELECT COUNT(*) FROM content_vectors cv WHERE cv.hash = d.hash AND cv.model = em.model) <> em.total_chunks
+      OR COALESCE((SELECT MIN(cv.seq) FROM content_vectors cv WHERE cv.hash = d.hash AND cv.model = em.model), -1) <> 0
+      OR COALESCE((SELECT MAX(cv.seq) FROM content_vectors cv WHERE cv.hash = d.hash AND cv.model = em.model), -1) <> em.total_chunks - 1
+      OR (
+        SELECT COUNT(*)
+        FROM content_vectors cv
+        JOIN vectors_vec vv ON vv.hash_seq = cv.hash || '_' || cv.seq
+        WHERE cv.hash = d.hash AND cv.model = em.model
+      ) <> em.total_chunks
+    )
     GROUP BY d.hash
     ORDER BY MIN(d.path)
-  `).all() as PendingEmbeddingDoc[];
+  `).all(model) as PendingEmbeddingDoc[];
 }
 
 function buildEmbeddingBatches(
@@ -1447,6 +1542,74 @@ function getEmbeddingDocsForBatch(db: Database, batch: PendingEmbeddingDoc[]): E
   }));
 }
 
+function deleteEmbeddingChunksForHash(db: Database, hash: string): void {
+  if (hasVectorTable(db)) {
+    db.prepare(`DELETE FROM vectors_vec WHERE hash_seq GLOB ?`).run(`${hash}_*`);
+  }
+  db.prepare(`DELETE FROM content_vectors WHERE hash = ?`).run(hash);
+}
+
+/** Reset a pending hash before retrying so models and stale sequences cannot mix. */
+function prepareEmbeddingDocument(db: Database, hash: string, model: string, totalChunks: number, embeddedAt: string): void {
+  const transaction = db.transaction(() => {
+    deleteEmbeddingChunksForHash(db, hash);
+    db.prepare(`DELETE FROM embedding_documents WHERE hash = ?`).run(hash);
+    db.prepare(`
+      INSERT INTO embedding_documents (hash, model, total_chunks, embedded_at, completed_at)
+      VALUES (?, ?, ?, ?, NULL)
+    `).run(hash, model, totalChunks, embeddedAt);
+  });
+  transaction();
+}
+
+/** Mark complete only after checking both metadata and sqlite-vec rows atomically. */
+function finalizeEmbeddingDocument(db: Database, hash: string, model: string): boolean {
+  const transaction = db.transaction(() => {
+    const state = db.prepare(`
+      SELECT
+        em.total_chunks,
+        (SELECT COUNT(*) FROM content_vectors cv WHERE cv.hash = em.hash AND cv.model = em.model) AS content_count,
+        COALESCE((SELECT MIN(cv.seq) FROM content_vectors cv WHERE cv.hash = em.hash AND cv.model = em.model), -1) AS min_seq,
+        COALESCE((SELECT MAX(cv.seq) FROM content_vectors cv WHERE cv.hash = em.hash AND cv.model = em.model), -1) AS max_seq,
+        (
+          SELECT COUNT(*)
+          FROM content_vectors cv
+          JOIN vectors_vec vv ON vv.hash_seq = cv.hash || '_' || cv.seq
+          WHERE cv.hash = em.hash AND cv.model = em.model
+        ) AS vector_count
+      FROM embedding_documents em
+      WHERE em.hash = ? AND em.model = ?
+    `).get(hash, model) as {
+      total_chunks: number;
+      content_count: number;
+      min_seq: number;
+      max_seq: number;
+      vector_count: number;
+    } | undefined;
+
+    const complete = !!state
+      && state.total_chunks > 0
+      && state.content_count === state.total_chunks
+      && state.vector_count === state.total_chunks
+      && state.min_seq === 0
+      && state.max_seq === state.total_chunks - 1;
+
+    if (complete) {
+      db.prepare(`
+        UPDATE embedding_documents SET completed_at = ? WHERE hash = ? AND model = ?
+      `).run(new Date().toISOString(), hash, model);
+      return true;
+    }
+
+    deleteEmbeddingChunksForHash(db, hash);
+    db.prepare(`
+      UPDATE embedding_documents SET completed_at = NULL WHERE hash = ? AND model = ?
+    `).run(hash, model);
+    return false;
+  });
+  return transaction();
+}
+
 /**
  * Generate vector embeddings for documents that need them.
  * Pure function — no console output, no db lifecycle management.
@@ -1465,7 +1628,12 @@ export async function generateEmbeddings(
     clearAllEmbeddings(db);
   }
 
-  const docsToEmbed = getPendingEmbeddingDocs(db);
+  // Resolve the active model before pending checks: completion metadata is
+  // model-specific and an old model must never satisfy a new model's health.
+  const llm = getLlm(store);
+  const model = options?.model ?? llm.embedModelName ?? DEFAULT_EMBED_MODEL;
+  const embedModelUri = llm.embedModelName;
+  const docsToEmbed = getPendingEmbeddingDocs(db, model);
 
   if (docsToEmbed.length === 0) {
     return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
@@ -1473,13 +1641,6 @@ export async function generateEmbeddings(
   const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
   const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
-
-  // Use store's LlamaCpp or global singleton, wrapped in a session.
-  // Use the LLM's configured model name (respects API provider config)
-  // instead of the hardcoded DEFAULT_EMBED_MODEL.
-  const llm = getLlm(store);
-  const model = options?.model ?? llm.embedModelName ?? DEFAULT_EMBED_MODEL;
-  const embedModelUri = llm.embedModelName;
 
   // Create a session manager for this llm instance
   const result = await withLLMSessionGeneric(llm, async (session) => {
@@ -1542,6 +1703,18 @@ export async function generateEmbeddings(
         continue;
       }
 
+      const expectedChunksByHash = new Map<string, number>();
+      const successfulChunksByHash = new Map<string, number>();
+      for (const chunk of batchChunks) {
+        expectedChunksByHash.set(chunk.hash, (expectedChunksByHash.get(chunk.hash) ?? 0) + 1);
+      }
+      // Persist the exact plan and remove any interrupted prefix before making
+      // provider calls. A failed dimension probe therefore still leaves a clean,
+      // durably pending document.
+      for (const [hash, expectedChunks] of expectedChunksByHash) {
+        prepareEmbeddingDocument(db, hash, model, expectedChunks, now);
+      }
+
       if (!vectorTableInitialized) {
         const firstChunk = batchChunks[0]!;
         const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title, embedModelUri);
@@ -1586,6 +1759,7 @@ export async function generateEmbeddings(
             if (embedding) {
               insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now);
               chunksEmbedded++;
+              successfulChunksByHash.set(chunk.hash, (successfulChunksByHash.get(chunk.hash) ?? 0) + 1);
             } else {
               errors++;
             }
@@ -1605,6 +1779,7 @@ export async function generateEmbeddings(
                 if (result) {
                   insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), model, now);
                   chunksEmbedded++;
+                  successfulChunksByHash.set(chunk.hash, (successfulChunksByHash.get(chunk.hash) ?? 0) + 1);
                 } else {
                   errors++;
                 }
@@ -1626,6 +1801,14 @@ export async function generateEmbeddings(
           totalBytes,
           errors,
         });
+      }
+
+      for (const hash of expectedChunksByHash.keys()) {
+        if (!finalizeEmbeddingDocument(db, hash, model)) {
+          const discarded = successfulChunksByHash.get(hash) ?? 0;
+          chunksEmbedded -= discarded;
+          errors += discarded;
+        }
       }
 
       bytesProcessed += batchBytes;
@@ -1653,7 +1836,12 @@ export async function generateEmbeddings(
 export function createStore(dbPath?: string): Store {
   const resolvedPath = dbPath || getDefaultDbPath();
   const db = openDatabase(resolvedPath);
-  initializeDatabase(db);
+  try {
+    initializeDatabase(db);
+  } catch (error) {
+    try { db.close(); } catch {}
+    throw error;
+  }
 
   const store: Store = {
     db,
@@ -1662,9 +1850,9 @@ export function createStore(dbPath?: string): Store {
     ensureVecTable: (dimensions: number) => ensureVecTableInternal(db, dimensions),
 
     // Index health
-    getHashesNeedingEmbedding: () => getHashesNeedingEmbedding(db),
-    getIndexHealth: () => getIndexHealth(db),
-    getStatus: () => getStatus(db),
+    getHashesNeedingEmbedding: () => getHashesNeedingEmbedding(db, store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
+    getIndexHealth: () => getIndexHealth(db, store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
+    getStatus: () => getStatus(db, store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
 
     // Caching
     getCacheKey,
@@ -1722,7 +1910,7 @@ export function createStore(dbPath?: string): Store {
     getActiveDocumentPaths: (collectionName: string) => getActiveDocumentPaths(db, collectionName),
 
     // Vector/embedding operations
-    getHashesForEmbedding: () => getHashesForEmbedding(db),
+    getHashesForEmbedding: () => getHashesForEmbedding(db, store.llm?.embedModelName ?? DEFAULT_EMBED_MODEL),
     clearAllEmbeddings: () => clearAllEmbeddings(db),
     insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string) => insertEmbedding(db, hash, seq, pos, embedding, model, embeddedAt),
   };
@@ -1923,14 +2111,8 @@ export type IndexStatus = {
 // Index health
 // =============================================================================
 
-export function getHashesNeedingEmbedding(db: Database): number {
-  const result = db.prepare(`
-    SELECT COUNT(DISTINCT d.hash) as count
-    FROM documents d
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
-  `).get() as { count: number };
-  return result.count;
+export function getHashesNeedingEmbedding(db: Database, model: string = DEFAULT_EMBED_MODEL): number {
+  return getPendingEmbeddingDocs(db, model).length;
 }
 
 export type IndexHealthInfo = {
@@ -1939,8 +2121,8 @@ export type IndexHealthInfo = {
   daysStale: number | null;
 };
 
-export function getIndexHealth(db: Database): IndexHealthInfo {
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+export function getIndexHealth(db: Database, model: string = DEFAULT_EMBED_MODEL): IndexHealthInfo {
+  const needsEmbedding = getHashesNeedingEmbedding(db, model);
   const totalDocs = (db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number }).count;
 
   const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
@@ -2046,36 +2228,44 @@ export function cleanupOrphanedVectors(db: Database): number {
     return 0;
   }
 
-  // Count orphaned vectors first
-  const countResult = db.prepare(`
-    SELECT COUNT(*) as c FROM content_vectors cv
-    WHERE NOT EXISTS (
-      SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
-    )
-  `).get() as { c: number };
-
-  if (countResult.c === 0) {
-    return 0;
-  }
-
-  // Delete from vectors_vec first
-  db.exec(`
-    DELETE FROM vectors_vec WHERE hash_seq IN (
-      SELECT cv.hash || '_' || cv.seq FROM content_vectors cv
+  const transaction = db.transaction(() => {
+    const countResult = db.prepare(`
+      SELECT COUNT(*) as c FROM content_vectors cv
       WHERE NOT EXISTS (
         SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
       )
-    )
-  `);
+    `).get() as { c: number };
 
-  // Delete from content_vectors
-  db.exec(`
-    DELETE FROM content_vectors WHERE hash NOT IN (
-      SELECT hash FROM documents WHERE active = 1
-    )
-  `);
+    // Remove vector-only remnants as well as vectors belonging to inactive
+    // hashes. This runs before content metadata so hash_seq evidence is intact.
+    db.exec(`
+      DELETE FROM vectors_vec
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM content_vectors cv
+        JOIN documents d ON d.hash = cv.hash AND d.active = 1
+        WHERE cv.hash || '_' || cv.seq = vectors_vec.hash_seq
+      )
+    `);
+    db.exec(`
+      DELETE FROM content_vectors
+      WHERE NOT EXISTS (
+        SELECT 1 FROM documents d WHERE d.hash = content_vectors.hash AND d.active = 1
+      )
+    `);
+    if (hasEmbeddingMetadataTable(db)) {
+      db.exec(`
+        DELETE FROM embedding_documents
+        WHERE NOT EXISTS (
+          SELECT 1 FROM documents d WHERE d.hash = embedding_documents.hash AND d.active = 1
+        )
+      `);
+    }
 
-  return countResult.c;
+    return countResult.c;
+  });
+
+  return transaction();
 }
 
 /**
@@ -3588,15 +3778,19 @@ async function getEmbedding(text: string, model: string, isQuery: boolean, sessi
  * Get all unique content hashes that need embeddings (from active documents).
  * Returns hash, document body, and a sample path for display purposes.
  */
-export function getHashesForEmbedding(db: Database): { hash: string; body: string; path: string }[] {
-  return db.prepare(`
-    SELECT d.hash, c.doc as body, MIN(d.path) as path
+export function getHashesForEmbedding(db: Database, model: string = DEFAULT_EMBED_MODEL): { hash: string; body: string; path: string }[] {
+  const pending = getPendingEmbeddingDocs(db, model);
+  if (pending.length === 0) return [];
+  const placeholders = pending.map(() => "?").join(",");
+  const rows = db.prepare(`
+    SELECT d.hash, c.doc AS body, MIN(d.path) AS path
     FROM documents d
     JOIN content c ON d.hash = c.hash
-    LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
+    WHERE d.active = 1 AND d.hash IN (${placeholders})
     GROUP BY d.hash
-  `).all() as { hash: string; body: string; path: string }[];
+    ORDER BY MIN(d.path)
+  `).all(...pending.map((doc) => doc.hash)) as { hash: string; body: string; path: string }[];
+  return rows;
 }
 
 /**
@@ -3604,19 +3798,21 @@ export function getHashesForEmbedding(db: Database): { hash: string; body: strin
  * Deletes all rows from content_vectors and drops the vectors_vec table.
  */
 export function clearAllEmbeddings(db: Database): void {
-  db.exec(`DELETE FROM content_vectors`);
-  db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+  const transaction = db.transaction(() => {
+    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    db.exec(`DELETE FROM content_vectors`);
+    if (hasEmbeddingMetadataTable(db)) db.exec(`DELETE FROM embedding_documents`);
+  });
+  transaction();
 }
 
 /**
  * Insert a single embedding into both content_vectors and vectors_vec tables.
  * The hash_seq key is formatted as "hash_seq" for the vectors_vec table.
  *
- * content_vectors is inserted first so that getHashesForEmbedding (which checks
- * only content_vectors) won't re-select the hash on a crash between the two inserts.
- *
- * vectors_vec uses DELETE + INSERT instead of INSERT OR REPLACE because sqlite-vec's
- * vec0 virtual tables silently ignore the OR REPLACE conflict clause.
+ * Both tables are updated transactionally. vectors_vec uses DELETE + INSERT
+ * instead of INSERT OR REPLACE because sqlite-vec's vec0 virtual tables silently
+ * ignore the OR REPLACE conflict clause.
  */
 export function insertEmbedding(
   db: Database,
@@ -3629,15 +3825,17 @@ export function insertEmbedding(
 ): void {
   const hashSeq = `${hash}_${seq}`;
 
-  // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
-  const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, ?, ?, ?, ?)`);
-  insertContentVectorStmt.run(hash, seq, pos, model, embeddedAt);
-
-  // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-  const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-  const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
-  deleteVecStmt.run(hashSeq);
-  insertVecStmt.run(hashSeq, embedding);
+  // vec0 virtual tables don't support OR REPLACE. Keep metadata and vector
+  // replacement in one SQLite transaction so neither side can survive alone.
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embedded_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(hash, seq, pos, model, embeddedAt);
+    db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`).run(hashSeq);
+    db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(hashSeq, embedding);
+  });
+  transaction();
 }
 
 // =============================================================================
@@ -4138,7 +4336,7 @@ export function findDocuments(
 // Status
 // =============================================================================
 
-export function getStatus(db: Database): IndexStatus {
+export function getStatus(db: Database, model: string = DEFAULT_EMBED_MODEL): IndexStatus {
   // DB is source of truth for collections — config provides supplementary metadata
   const dbCollections = db.prepare(`
     SELECT
@@ -4173,7 +4371,7 @@ export function getStatus(db: Database): IndexStatus {
   });
 
   const totalDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 1`).get() as { c: number }).c;
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+  const needsEmbedding = getHashesNeedingEmbedding(db, model);
   const hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
 
   return {
