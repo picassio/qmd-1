@@ -192,6 +192,39 @@ describe("partial embedding recovery", () => {
     }
   });
 
+  test("blank documents stay excluded from pending work across retries and reopen", async () => {
+    const dbPath = await tempDb("blank-document");
+    const hash = "blankhash";
+    let store = createStore(dbPath);
+    store.llm = fakeLlm("active-model");
+    insertActiveDocument(store, hash, " \n\t\u00a0\u2003\ufeff");
+
+    expect(store.getHashesNeedingEmbedding()).toBe(0);
+    store.ensureVecTable(3);
+    expect(store.getHashesNeedingEmbedding()).toBe(0);
+    await expect(generateEmbeddings(store)).resolves.toMatchObject({
+      docsProcessed: 0,
+      chunksEmbedded: 0,
+      errors: 0,
+    });
+    store.close();
+
+    store = createStore(dbPath);
+    store.llm = fakeLlm("active-model");
+    try {
+      expect(store.getHashesNeedingEmbedding()).toBe(0);
+      await expect(generateEmbeddings(store)).resolves.toMatchObject({
+        docsProcessed: 0,
+        chunksEmbedded: 0,
+        errors: 0,
+      });
+      expect(store.getIndexHealth().needsEmbedding).toBe(0);
+      expect(store.getStatus().needsEmbedding).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
   test("an interrupted prefix is detected on reopen and stale sequences are replaced", async () => {
     const dbPath = await tempDb("interrupted-prefix");
     const hash = "interruptedhash";

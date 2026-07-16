@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createStore,
+  hashContent,
   insertContent,
   insertDocument,
   insertEmbedding,
@@ -31,6 +32,7 @@ let server: Server;
 let baseUrl: string;
 let embedCalls = 0;
 let chatCalls = 0;
+const remoteDocument = "# Remote Search\n\nProfile preferences and remote semantic material.\n";
 
 function readJson(req: import("node:http").IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolveBody, reject) => {
@@ -124,7 +126,7 @@ beforeAll(async () => {
   dbPath = join(testDir, "index.sqlite");
   await mkdir(configDir, { recursive: true });
   await mkdir(docsDir, { recursive: true });
-  await writeFile(join(docsDir, "remote.md"), "# Remote Search\n\nProfile preferences and remote semantic material.\n");
+  await writeFile(join(docsDir, "remote.md"), remoteDocument);
   await writeFile(join(configDir, "index.yml"), [
     "collections:",
     "  docs:",
@@ -134,12 +136,16 @@ beforeAll(async () => {
   ].join("\n"));
 
   const store = createStore(dbPath);
-  const hash = "remote-cli-hash";
+  const hash = await hashContent(remoteDocument);
   const now = new Date(0).toISOString();
-  insertContent(store.db, hash, "# Remote Search\n\nProfile preferences and remote semantic material.\n", now);
+  insertContent(store.db, hash, remoteDocument, now);
   insertDocument(store.db, "docs", "remote.md", "Remote Search", hash, now, now);
   store.ensureVecTable(2);
-  insertEmbedding(store.db, hash, 0, 0, new Float32Array([1, 0]), "embeddinggemma", now);
+  insertEmbedding(store.db, hash, 0, 0, new Float32Array([1, 0]), "remote-embed-model", now);
+  store.db.prepare(`
+    INSERT INTO embedding_documents (hash, model, total_chunks, embedded_at, completed_at)
+    VALUES (?, 'remote-embed-model', 1, ?, ?)
+  `).run(hash, now, now);
   store.close();
 
   await startServer();
@@ -164,6 +170,22 @@ describe("built native-free CLI", () => {
     expect(result.stderr).not.toContain("native package resolution denied");
   });
 
+  test("status, search health, and embed preflight use the active remote model", async () => {
+    const status = await runBuilt(["status"]);
+    expect(status.exitCode, status.stderr).toBe(0);
+    expect(status.stdout).not.toContain("Pending:");
+
+    const search = await runBuilt(["vsearch", "profile preferences", "-c", "docs", "--no-expand", "--json"]);
+    expect(search.exitCode, search.stderr).toBe(0);
+    expect(search.stderr).not.toContain("need embeddings");
+
+    const callsBeforeEmbed = embedCalls;
+    const embed = await runBuilt(["embed"]);
+    expect(embed.exitCode, embed.stderr).toBe(0);
+    expect(embed.stdout).toContain("All content hashes already have embeddings");
+    expect(embedCalls).toBe(callsBeforeEmbed);
+  });
+
   test.each(["--no-expand", "--noExpand"])("vsearch %s makes exactly one embed call and zero chat calls", async flag => {
     const result = await runBuilt(["vsearch", "profile preferences", "-c", "docs", "-n", "3", flag, "--json"]);
     expect(result.exitCode, result.stderr).toBe(0);
@@ -186,6 +208,16 @@ describe("built native-free CLI", () => {
     expect(chatCalls).toBeGreaterThanOrEqual(1);
     expect(embedCalls).toBe(1);
     expect(result.stderr).not.toContain("native package resolution denied");
+  });
+
+  test("update and collection indexing notices use the active remote model", async () => {
+    const update = await runBuilt(["update"]);
+    expect(update.exitCode, update.stderr).toBe(0);
+    expect(update.stdout).not.toContain("need vectors");
+
+    const add = await runBuilt(["collection", "add", docsDir, "--name", "docs-copy"]);
+    expect(add.exitCode, add.stderr).toBe(0);
+    expect(add.stdout).not.toContain("need vectors");
   });
 });
 

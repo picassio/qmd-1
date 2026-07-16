@@ -115,6 +115,24 @@ describe("RemoteLLM Agent Board wire contract", () => {
     expect(requests).toHaveLength(2);
   });
 
+  test("HTTP failure diagnostics never log untrusted provider response bodies", async () => {
+    const sentinel = "SENTINEL_PROVIDER_ECHO_SECRET";
+    Object.assign(process.env, {
+      QMD_EMBED_URL: "https://embed.example/v1",
+      QMD_CHAT_URL: "https://chat.example/v1",
+    });
+    stubFetch(() => new Response(`provider echoed ${sentinel}`, { status: 503 }));
+    const llm = new RemoteLLM();
+
+    await expect(llm.embed("sensitive document")).resolves.toBeNull();
+    await expect(llm.generate("sensitive prompt")).resolves.toBeNull();
+
+    const diagnostics = JSON.stringify(vi.mocked(console.error).mock.calls);
+    expect(diagnostics).not.toContain(sentinel);
+    expect(diagnostics).toContain("RemoteLLM embed HTTP 503");
+    expect(diagnostics).toContain("RemoteLLM chat HTTP 503");
+  });
+
   test("missing URL, network failure, and malformed embed responses use null failure values", async () => {
     stubFetch(() => { throw new Error("network down"); });
     const llm = new RemoteLLM();
