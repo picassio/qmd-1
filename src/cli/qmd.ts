@@ -24,7 +24,6 @@ import {
   findDocumentByDocid,
   isDocid,
   matchFilesByGlob,
-  getHashesNeedingEmbedding,
   clearAllEmbeddings,
   insertEmbedding,
   getStatus,
@@ -36,7 +35,6 @@ import {
   getCacheKey,
   getCachedResult,
   setCachedResult,
-  getIndexHealth,
   parseVirtualPath,
   buildVirtualPath,
   isVirtualPath,
@@ -270,8 +268,8 @@ function formatETA(seconds: number): string {
 
 
 // Check index health and print warnings/tips
-function checkIndexHealth(db: Database): void {
-  const { needsEmbedding, totalDocs, daysStale } = getIndexHealth(db);
+function checkIndexHealth(storeInstance: ReturnType<typeof createStore>): void {
+  const { needsEmbedding, totalDocs, daysStale } = storeInstance.getIndexHealth();
 
   // Warn if many docs need embedding
   if (needsEmbedding > 0) {
@@ -351,7 +349,8 @@ function formatBytes(bytes: number): string {
 
 async function showStatus(): Promise<void> {
   const dbPath = getDbPath();
-  const db = getDb();
+  const storeInstance = getStore();
+  const db = storeInstance.db;
 
   // Collections are defined in YAML; no duplicate cleanup needed.
   // Collections are defined in YAML; no duplicate cleanup needed.
@@ -369,7 +368,7 @@ async function showStatus(): Promise<void> {
   // Overall stats
   const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number };
   const vectorCount = db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number };
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+  const needsEmbedding = storeInstance.getHashesNeedingEmbedding();
 
   // Most recent update across all collections
   const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
@@ -662,7 +661,7 @@ async function updateCollections(): Promise<void> {
   }
 
   // Check if any documents need embedding (show once at end)
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+  const needsEmbedding = storeInstance.getHashesNeedingEmbedding();
   closeDb();
 
   console.log(`${c.green}✓ All collections updated.${c.reset}`);
@@ -1553,7 +1552,8 @@ function collectionRename(oldName: string, newName: string): void {
 }
 
 async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false, ignorePatterns?: string[]): Promise<void> {
-  const db = getDb();
+  const storeInstance = getStore();
+  const db = storeInstance.db;
   const resolvedPwd = pwd || getPwd();
   const now = new Date().toISOString();
   const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
@@ -1675,7 +1675,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const orphanedContent = cleanupOrphanedContent(db);
 
   // Check if vector index needs updating
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+  const needsEmbedding = storeInstance.getHashesNeedingEmbedding();
 
   progress.clear();
   console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
@@ -1726,7 +1726,7 @@ async function vectorIndex(
   }
 
   // Check if there's work to do before starting
-  const hashesToEmbed = getHashesNeedingEmbedding(db);
+  const hashesToEmbed = storeInstance.getHashesNeedingEmbedding();
   if (hashesToEmbed === 0 && !force) {
     console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
     closeDb();
@@ -2326,7 +2326,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
   const collectionNames = resolveCollectionFilter(opts.collection, true);
   const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
 
-  checkIndexHealth(store.db);
+  checkIndexHealth(store);
 
   await withSelectedLlmSession(selected, async () => {
     let results = await vectorSearchQuery(store, query, {
@@ -2379,7 +2379,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   const collectionNames = resolveCollectionFilter(opts.collection, true);
   const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
 
-  checkIndexHealth(store.db);
+  checkIndexHealth(store);
 
   // Check for structured query syntax (lex:/vec:/hyde:/intent: prefixes)
   const parsed = parseStructuredQuery(query);

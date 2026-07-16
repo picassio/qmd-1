@@ -60,14 +60,6 @@ function headers(key?: string): Record<string, string> {
   };
 }
 
-async function safeText(response: Response): Promise<string> {
-  try {
-    return (await response.text()).slice(0, 500);
-  } catch {
-    return "<unreadable response>";
-  }
-}
-
 function expansionPrompt(query: string, context?: string): string {
   const contextLine = context ? `\nContext: ${context}` : "";
   return (
@@ -120,7 +112,7 @@ export class RemoteLLM implements LLM {
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        console.error(`RemoteLLM embed HTTP ${response.status}: ${await safeText(response)}`);
+        console.error(`RemoteLLM embed HTTP ${response.status}`);
         return inputs.map(() => null);
       }
 
@@ -259,7 +251,7 @@ export class RemoteLLM implements LLM {
         }),
       });
       if (!response.ok) {
-        console.error(`RemoteLLM chat HTTP ${response.status}: ${await safeText(response)}`);
+        console.error(`RemoteLLM chat HTTP ${response.status}`);
         return null;
       }
       const json = await response.json() as {

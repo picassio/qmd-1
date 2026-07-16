@@ -1454,9 +1454,18 @@ function hasEmbeddingMetadataTable(db: Database): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embedding_documents'`).get();
 }
 
+// Match String.prototype.trim() so documents intentionally skipped by the
+// embedding loop are also excluded from pending/status queries.
+const NON_BLANK_DOCUMENT_SQL = `length(trim(c.doc, char(
+  9, 10, 11, 12, 13, 32, 160, 5760,
+  8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202,
+  8232, 8233, 8239, 8287, 12288, 65279
+))) > 0`;
+
 /**
- * Select active hashes whose expected chunk set is not provably complete for
- * the requested model. Legacy rows without metadata are intentionally pending.
+ * Select active non-blank hashes whose expected chunk set is not provably
+ * complete for the requested model. Legacy rows without metadata are
+ * intentionally pending.
  */
 function getPendingEmbeddingDocs(db: Database, model: string): PendingEmbeddingDoc[] {
   if (!hasVectorTable(db) || !hasEmbeddingMetadataTable(db)) {
@@ -1464,7 +1473,7 @@ function getPendingEmbeddingDocs(db: Database, model: string): PendingEmbeddingD
       SELECT d.hash, MIN(d.path) AS path, length(CAST(c.doc AS BLOB)) AS bytes
       FROM documents d
       JOIN content c ON d.hash = c.hash
-      WHERE d.active = 1
+      WHERE d.active = 1 AND ${NON_BLANK_DOCUMENT_SQL}
       GROUP BY d.hash
       ORDER BY MIN(d.path)
     `).all() as PendingEmbeddingDoc[];
@@ -1475,7 +1484,7 @@ function getPendingEmbeddingDocs(db: Database, model: string): PendingEmbeddingD
     FROM documents d
     JOIN content c ON d.hash = c.hash
     LEFT JOIN embedding_documents em ON em.hash = d.hash AND em.model = ?
-    WHERE d.active = 1 AND (
+    WHERE d.active = 1 AND ${NON_BLANK_DOCUMENT_SQL} AND (
       em.hash IS NULL
       OR em.completed_at IS NULL
       OR em.total_chunks < 1

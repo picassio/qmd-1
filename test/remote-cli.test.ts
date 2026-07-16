@@ -27,6 +27,7 @@ const nodeBinary = process.versions.bun
 let testDir: string;
 let configDir: string;
 let docsDir: string;
+let copyDocsDir: string;
 let dbPath: string;
 let server: Server;
 let baseUrl: string;
@@ -123,10 +124,13 @@ beforeAll(async () => {
   testDir = await mkdtemp(join(tmpdir(), "qmd-remote-cli-"));
   configDir = join(testDir, "config");
   docsDir = join(testDir, "docs");
+  copyDocsDir = join(testDir, "docs-copy");
   dbPath = join(testDir, "index.sqlite");
   await mkdir(configDir, { recursive: true });
   await mkdir(docsDir, { recursive: true });
+  await mkdir(copyDocsDir, { recursive: true });
   await writeFile(join(docsDir, "remote.md"), remoteDocument);
+  await writeFile(join(copyDocsDir, "remote.md"), remoteDocument);
   await writeFile(join(configDir, "index.yml"), [
     "collections:",
     "  docs:",
@@ -215,7 +219,7 @@ describe("built native-free CLI", () => {
     expect(update.exitCode, update.stderr).toBe(0);
     expect(update.stdout).not.toContain("need vectors");
 
-    const add = await runBuilt(["collection", "add", docsDir, "--name", "docs-copy"]);
+    const add = await runBuilt(["collection", "add", copyDocsDir, "--name", "docs-copy"]);
     expect(add.exitCode, add.stderr).toBe(0);
     expect(add.stdout).not.toContain("need vectors");
   });
