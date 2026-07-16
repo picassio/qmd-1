@@ -1,7 +1,7 @@
 {
   "name": "qmd-engine",
-  "version": "2.5.0",
-  "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
+  "version": "2.6.0",
+  "description": "Hybrid search for markdown with BM25, vector search, and local or remote LLM reranking",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,6 +24,7 @@
     "prepare": "[ -d .git ] && ./scripts/install-hooks.sh || true",
     "build": "tsc -p tsconfig.build.json && printf '#!/usr/bin/env node\n' | cat - dist/cli/qmd.js > dist/cli/qmd.tmp && mv dist/cli/qmd.tmp dist/cli/qmd.js && chmod +x dist/cli/qmd.js",
     "test": "vitest run --reporter=verbose test/",
+    "test:package": "bash test/package-artifact.test.sh",
     "qmd": "tsx src/cli/qmd.ts",
     "index": "tsx src/cli/qmd.ts index",
     "vector": "tsx src/cli/qmd.ts vector",
@@ -41,9 +42,9 @@
     "type": "git",
     "url": "https://github.com/picassio/qmd-1.git"
   },
-  "homepage": "https://github.com/tobi/qmd#readme",
+  "homepage": "https://github.com/picassio/qmd-1#readme",
   "bugs": {
-    "url": "https://github.com/tobi/qmd/issues"
+    "url": "https://github.com/picassio/qmd-1/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
@@ -72,7 +73,8 @@
     "@types/picomatch": "^4.0.3",
     "tsx": "4.21.0",
     "vitest": "3.2.4",
-    "node-llama-cpp": "3.18.1"
+    "node-llama-cpp": "3.18.1",
+    "typescript": "5.9.3"
   },
   "peerDependencies": {
     "typescript": "^5.9.3",

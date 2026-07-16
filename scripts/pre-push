@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pre-push hook: validates v* tag pushes before they reach the remote.
+# Pre-push hook: validates engine-v* fork release tags before they reach the remote.
 #
 # Checks:
 #   1. package.json version matches the tag
@@ -11,8 +11,8 @@ set -euo pipefail
 # All failures block the push and write to stderr.
 
 while read -r local_ref local_sha remote_ref remote_sha; do
-  # Only validate v* tag pushes
-  if [[ "$local_ref" != refs/tags/v* ]]; then
+  # Upstream owns plain v*; only validate this fork's engine-v* tags.
+  if [[ "$local_ref" != refs/tags/engine-v* ]]; then
     continue
   fi
 
@@ -22,7 +22,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 
   TAG="${local_ref#refs/tags/}"
-  VERSION="${TAG#v}"
+  VERSION="${TAG#engine-v}"
 
   echo >&2 "Validating release $TAG..."
 
@@ -74,7 +74,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     if [[ "$FAILED" -gt 0 ]] 2>/dev/null; then
       echo >&2 "ABORT: CI failed for $COMMIT"
-      echo >&2 "https://github.com/tobi/qmd/commit/$COMMIT"
+      echo >&2 "https://github.com/picassio/qmd-1/commit/$COMMIT"
       exit 1
     fi
 

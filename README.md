@@ -1,8 +1,8 @@
 # QMD - Query Markup Documents
 
-An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
+A hybrid search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—all running locally via node-llama-cpp with GGUF models.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking. It supports local GGUF models through the optional `node-llama-cpp` peer or native-free remote/API providers.
 
 ![QMD Architecture](assets/qmd-architecture.png)
 
@@ -12,13 +12,13 @@ You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
 
 ```sh
 # Install globally (Node or Bun)
-npm install -g @tobilu/qmd
+npm install -g qmd-engine
 # or
-bun install -g @tobilu/qmd
+bun install -g qmd-engine
 
 # Or run directly
-npx @tobilu/qmd ...
-bunx @tobilu/qmd ...
+npx qmd-engine ...
+bunx qmd-engine ...
 
 # Create collections for your notes, docs, and meeting transcripts
 qmd collection add ~/notes --name notes
@@ -142,13 +142,13 @@ Use QMD as a library in your own Node.js or Bun applications.
 #### Installation
 
 ```sh
-npm install @tobilu/qmd
+npm install qmd-engine
 ```
 
 #### Quick Start
 
 ```typescript
-import { createStore } from '@tobilu/qmd'
+import { createStore } from 'qmd-engine'
 
 const store = await createStore({
   dbPath: './my-index.sqlite',
@@ -170,7 +170,7 @@ await store.close()
 `createStore()` accepts three modes:
 
 ```typescript
-import { createStore } from '@tobilu/qmd'
+import { createStore } from 'qmd-engine'
 
 // 1. Inline config — no files needed besides the DB
 const store = await createStore({
@@ -349,7 +349,7 @@ import type {
   CollectionConfig,    // Inline config shape
   IndexStatus,         // From getStatus()
   IndexHealthInfo,     // From getIndexHealth()
-} from '@tobilu/qmd'
+} from 'qmd-engine'
 ```
 
 Utility exports:
@@ -360,7 +360,7 @@ import {
   addLineNumbers,              // Add line numbers to text
   DEFAULT_MULTI_GET_MAX_BYTES, // Default max file size for multiGet (10KB)
   Maintenance,                 // Database maintenance operations
-} from '@tobilu/qmd'
+} from 'qmd-engine'
 ```
 
 #### Lifecycle
@@ -515,18 +515,41 @@ Supported model families:
 > since vectors are not cross-compatible between models. The prompt format is
 > automatically adjusted for each model family.
 
+### Remote providers
+
+Remote OpenAI-compatible embedding and chat endpoints can be configured without
+installing `node-llama-cpp`. Existing `config.providers` and `QMD_*_URL`
+configuration uses the general-purpose API adapter.
+
+Agent Board compatibility is explicitly selected; an embedding URL alone does
+not enable it:
+
+```sh
+export QMD_COMPAT_MODE=agent-board
+export QMD_EMBED_URL="https://provider.example/v1"
+export QMD_CHAT_URL="https://provider.example/v1"
+export QMD_EMBED_MODEL="text-embedding-model"
+export QMD_EMBED_DIMS=1536                 # optional
+export QMD_EMBED_KEY="..."                 # optional bearer token
+export QMD_CHAT_KEY="..."                  # optional bearer token
+```
+
+This mode uses OpenAI-style `/embeddings` and `/chat/completions` paths,
+identity reranking, and never falls back to local GGUF models. Provider errors
+return no remote result rather than triggering a native fallback.
+
 ## Installation
 
 ```sh
-npm install -g @tobilu/qmd
+npm install -g qmd-engine
 # or
-bun install -g @tobilu/qmd
+bun install -g qmd-engine
 ```
 
 ### Development
 
 ```sh
-git clone https://github.com/tobi/qmd
+git clone https://github.com/picassio/qmd-1.git
 cd qmd
 npm install
 npm link
@@ -625,8 +648,12 @@ qmd context rm qmd://notes/old
 # Full-text search (fast, keyword-based)
 qmd search "authentication flow"
 
-# Vector search (semantic similarity)
+# Vector search (semantic similarity, with query expansion)
 qmd vsearch "how to login"
+
+# One raw-query embedding and one vector lookup, with no chat expansion
+qmd vsearch "how to login" --no-expand
+# camelCase alias: --noExpand
 
 # Hybrid search with re-ranking (best quality)
 qmd query "user authentication"
@@ -787,8 +814,9 @@ collections     -- Indexed directories with name and glob patterns
 path_contexts   -- Context descriptions by virtual path (qmd://...)
 documents       -- Markdown content with metadata and docid (6-char hash)
 documents_fts   -- FTS5 full-text index
-content_vectors -- Embedding chunks (hash, seq, pos, 900 tokens each)
-vectors_vec     -- sqlite-vec vector index (hash_seq key)
+embedding_documents -- Expected chunk count for each hash/model completion
+content_vectors     -- Embedding chunks (hash, seq, pos, model)
+vectors_vec         -- sqlite-vec vector index (hash_seq key)
 llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 ```
 
@@ -797,6 +825,12 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
+| `QMD_SQLITE_BUSY_TIMEOUT` | `120000` | SQLite lock wait in milliseconds; `0` is fail-fast |
+| `QMD_COMPAT_MODE` | unset | Set exactly `agent-board` for Agent Board remote semantics |
+| `QMD_EMBED_URL` | unset | Remote embedding API base URL |
+| `QMD_CHAT_URL` | unset | Remote chat API base URL |
+| `QMD_EMBED_MODEL` | provider/local default | Embedding model identity |
+| `QMD_EMBED_DIMS` | provider default | Optional remote embedding dimensions |
 
 ## How It Works
 
@@ -820,8 +854,8 @@ Collection ──► Glob Pattern ──► Markdown Files ──► Parse Title
 Documents are chunked into ~900-token pieces with 15% overlap using smart boundary detection:
 
 ```
-Document ──► Smart Chunk (~900 tokens) ──► Format each chunk ──► node-llama-cpp ──► Store Vectors
-                │                           "title | text"        embedBatch()
+Document ──► Smart Chunk (~900 tokens) ──► Format each chunk ──► Selected LLM ──► Store Vectors
+                │                           "title | text"       local or remote
                 │
                 └─► Chunks stored with:
                     - hash: document hash

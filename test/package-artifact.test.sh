@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 EXPECTED_VERSION=2.6.0
+# npm warns about pnpm's auto-install-peers project setting; keep gate output signal-only.
+export npm_config_loglevel=error
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/qmd-package.XXXXXX")
 SERVER_PID=""
 cleanup() {
@@ -167,10 +169,19 @@ export QMD_EMBED_MODEL=package-smoke
 export QMD_EMBED_DIMS=3
 $QMD collection add "$TMP/remote-docs" --name package-remote > /dev/null
 $QMD embed > /dev/null
+cp "$TMP/remote-counts" "$TMP/remote-counts-before-vsearch"
 $QMD vsearch remote-vector-marker --no-expand --json > "$TMP/remote.json"
 grep -Fq 'qmd://package-remote/note.md' "$TMP/remote.json" || fail "packed remote vsearch smoke failed"
-node -e 'const c=require(process.argv[1]); if(c.embeddings!==2 || c.chat!==0) { console.error(c); process.exit(1) }' "$TMP/remote-counts" \
-  || fail "packed remote smoke made unexpected provider calls"
+node -e '
+  const fs = require("node:fs");
+  const before = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const after = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  if (after.embeddings - before.embeddings !== 1 || after.chat - before.chat !== 0 || after.chat !== 0) {
+    console.error({ before, after });
+    process.exit(1);
+  }
+' "$TMP/remote-counts-before-vsearch" "$TMP/remote-counts" \
+  || fail "packed remote vsearch did not make exactly one embed and zero chat calls"
 
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true

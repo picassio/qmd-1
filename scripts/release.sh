@@ -4,8 +4,9 @@ set -euo pipefail
 # QMD Release Script
 #
 # Renames the [Unreleased] section in CHANGELOG.md to the new version,
-# bumps package.json, commits, and creates a tag. The actual publish
-# happens via GitHub Actions when the tag is pushed.
+# bumps package.json, commits, and creates an engine-v* fork tag. Upstream
+# owns plain v* tags. The actual publish happens via GitHub Actions when the
+# engine-v* tag is pushed.
 #
 # Usage: ./scripts/release.sh [patch|minor|major|<version>]
 # Examples:
@@ -87,7 +88,8 @@ echo ""
 
 # --- Confirm ---
 
-read -p "Release v$NEW? [y/N] " -n 1 -r
+TAG="engine-v$NEW"
+read -p "Release $TAG? [y/N] " -n 1 -r
 echo ""
 [[ $REPLY =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 
@@ -109,11 +111,11 @@ awk '
 jq --arg v "$NEW" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
 
 git add package.json CHANGELOG.md
-git commit -m "release: v$NEW"
-git tag -a "v$NEW" -m "v$NEW"
+git commit -m "release: $TAG"
+git tag -a "$TAG" -m "$TAG"
 
 echo ""
-echo "Created commit and tag v$NEW"
+echo "Created commit and tag $TAG"
 echo ""
 echo "Next: push to trigger the publish workflow"
 echo ""

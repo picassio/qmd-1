@@ -31,12 +31,16 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install sqlite
 
-      - run: npm install
+      - run: npm ci
 
       - name: Tests
         run: npx vitest run --reporter=verbose --testTimeout 60000 test/
         env:
           CI: true
+
+      - name: Reproducible npm artifact
+        if: runner.os == 'Linux' && matrix.node-version == '22'
+        run: npm run test:package
 
   test-bun:
     name: Bun (${{ matrix.os }})

@@ -19,6 +19,10 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Verify reproducible package artifact
+        run: npm run test:package
       - name: Verify tag matches package version
         if: github.ref_type == 'tag'
         run: |

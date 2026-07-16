@@ -9,6 +9,7 @@ const packageJson = JSON.parse(read("package.json"));
 const npmLock = JSON.parse(read("package-lock.json"));
 const pnpmLock = YAML.parse(read("pnpm-lock.yaml"));
 const bunLock = read("bun.lock");
+const bunRoot = JSON.parse(bunLock.replace(/,\s*([}\]])/g, "$1")).workspaces[""];
 
 const RELEASE_VERSION = "2.6.0";
 const RELEASE_IDENTITY = `qmd-engine@${RELEASE_VERSION}`;
@@ -28,7 +29,7 @@ describe("npm artifact release contract", () => {
     expect(pnpmLock.importers["."].name).toBe("qmd-engine");
     expect(pnpmLock.importers["."].version).toBe(RELEASE_VERSION);
 
-    expect(bunLock).toMatch(/"":\s*\{\s*"name":\s*"qmd-engine",\s*"version":\s*"2\.6\.0",/s);
+    expect(`${bunRoot.name}@${bunRoot.version}`).toBe(RELEASE_IDENTITY);
   });
 
   it("keeps all direct dependency declarations synchronized with every lock", () => {
@@ -40,25 +41,16 @@ describe("npm artifact release contract", () => {
     expect(npmRoot.peerDependenciesMeta).toEqual(packageJson.peerDependenciesMeta);
 
     const pnpmRoot = pnpmLock.importers["."];
+    expect(read(".npmrc")).toContain("auto-install-peers=false");
     expect(pnpmLock.settings.autoInstallPeers).toBe(false);
     expect(directSpecifiers(pnpmRoot.dependencies)).toEqual(packageJson.dependencies);
     expect(directSpecifiers(pnpmRoot.devDependencies)).toEqual(packageJson.devDependencies);
     expect(directSpecifiers(pnpmRoot.optionalDependencies)).toEqual(packageJson.optionalDependencies);
 
-    for (const [group, dependencies] of Object.entries({
-      dependencies: packageJson.dependencies,
-      devDependencies: packageJson.devDependencies,
-      optionalDependencies: packageJson.optionalDependencies,
-      peerDependencies: packageJson.peerDependencies,
-    })) {
-      for (const [name, version] of Object.entries(dependencies as Record<string, string>)) {
-        const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const escapedVersion = String(version).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        expect(bunLock, `bun.lock ${group}.${name}`).toMatch(
-          new RegExp(`"${group}":[\\s\\S]*?"${escapedName}": "${escapedVersion}"`),
-        );
-      }
-    }
+    expect(bunRoot.dependencies).toEqual(packageJson.dependencies);
+    expect(bunRoot.devDependencies).toEqual(packageJson.devDependencies);
+    expect(bunRoot.optionalDependencies).toEqual(packageJson.optionalDependencies);
+    expect(bunRoot.peerDependencies).toEqual(packageJson.peerDependencies);
   });
 
   it("keeps node-llama-cpp development-only and an optional peer", () => {

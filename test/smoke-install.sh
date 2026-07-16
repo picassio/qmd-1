@@ -28,7 +28,7 @@ build_image() {
   npm run build --silent
 
   echo "==> Packing tarball..."
-  rm -f test/tobilu-qmd-*.tgz
+  rm -f test/qmd-engine-*.tgz
   TARBALL=$(npm pack --pack-destination test/ 2>/dev/null | tail -1)
   echo "    $TARBALL"
 
@@ -44,7 +44,7 @@ build_image() {
   $CTR build -f test/Containerfile -t "$IMAGE" test/
 
   # Clean up
-  rm -f test/tobilu-qmd-*.tgz
+  rm -f test/qmd-engine-*.tgz
   rm -rf test/test-src
   echo "==> Image ready: $IMAGE"
 }
@@ -100,7 +100,7 @@ run_smoke_tests() {
     "export PATH=$NODE_BIN:\$PATH;
      NPM_GLOBAL=\$(npm root -g);
      node -e \"
-      const {openDatabase, loadSqliteVec} = await import('\$NPM_GLOBAL/@tobilu/qmd/dist/db.js');
+      const {openDatabase, loadSqliteVec} = await import('\$NPM_GLOBAL/qmd-engine/dist/db.js');
       const db = openDatabase(':memory:');
       loadSqliteVec(db);
       const r = db.prepare('SELECT vec_version() as v').get();
@@ -129,7 +129,7 @@ run_smoke_tests() {
 
   smoke_test "sqlite-vec loads (bun)" \
     "export PATH=$BUN_BIN:\$PATH; bun -e \"
-      const {openDatabase, loadSqliteVec} = await import('\$HOME/.bun/install/global/node_modules/@tobilu/qmd/dist/db.js');
+      const {openDatabase, loadSqliteVec} = await import('\$HOME/.bun/install/global/node_modules/qmd-engine/dist/db.js');
       const db = openDatabase(':memory:');
       loadSqliteVec(db);
       const r = db.prepare('SELECT vec_version() as v').get();
