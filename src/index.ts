@@ -79,7 +79,8 @@ export type {
 	RerankOptions,
 	RerankResult,
 } from "./llm-types.js";
-import { ApiLLM, hasApiProviders } from "./llm-api.js";
+import { compatibilityMode, selectConfiguredLlm } from "./llm-selection.js";
+export { RemoteLLM } from "./remote-llm.js";
 import {
   setConfigSource,
   loadConfig,
@@ -361,6 +362,9 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   if (options.configPath && options.config) {
     throw new Error("Provide either configPath or config, not both");
   }
+  // Explicit adapters have highest precedence. Otherwise validate compatibility
+  // before any possible local/native import.
+  if (!options.llm) compatibilityMode();
 
   // Create the internal store (opens DB, creates tables)
   const internal = createStoreInternal(options.dbPath);
@@ -384,36 +388,17 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   }
   // else: DB-only mode — no external config, use existing store_collections
 
-  // Create LLM instance — API providers if configured, else local GGUF.
+  // Create LLM instance using the frozen precedence: explicit adapter,
+  // Agent Board compatibility, ordinary API providers, then local GGUF.
   let llm: LLM;
-  if (options.llm) {
-    llm = options.llm;
-  } else if (hasApiProviders(config?.providers)) {
-    llm = new ApiLLM({ providers: config!.providers });
-  } else {
-    // Lazy-load node-llama-cpp only when no API providers are configured.
-    // This avoids triggering the Vulkan/CMake build on machines without GPU.
-    // node-llama-cpp is an OPTIONAL peer dependency: our deployments always
-    // use remote LLMs (StoreOptions.llm or config.providers), so local GGUF
-    // mode requires installing it explicitly.
-    let LlamaCpp: typeof import("./llm.js").LlamaCpp;
-    try {
-      ({ LlamaCpp } = await import("./llm.js"));
-    } catch (err) {
-      throw new Error(
-        "Local GGUF mode requires the optional peer dependency node-llama-cpp, which is not installed. " +
-          "Either configure remote API providers (config.providers), inject a custom adapter (StoreOptions.llm), " +
-          "or `npm install node-llama-cpp` to use local models. " +
-          `(${(err as Error).message})`,
-      );
-    }
-    llm = new LlamaCpp({
-      embedModel: config?.models?.embed,
-      generateModel: config?.models?.generate,
-      rerankModel: config?.models?.rerank,
+  try {
+    llm = options.llm ?? (await selectConfiguredLlm(config?.providers, config?.models, {
       inactivityTimeoutMs: 5 * 60 * 1000,
       disposeModelsOnInactivity: true,
-    });
+    })).llm;
+  } catch (error) {
+    internal.close();
+    throw error;
   }
   internal.llm = llm;
 

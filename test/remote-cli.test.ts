@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { createServer, type Server } from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -19,6 +19,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, "..");
 const builtCli = join(projectRoot, "dist", "cli", "qmd.js");
 const denyNativeLoader = join(projectRoot, "test", "fixtures", "deny-native-loader.mjs");
+const nodeBinary = process.versions.bun
+  ? execFileSync("/usr/bin/env", ["bash", "-lc", "command -v node"], { encoding: "utf8" }).trim()
+  : process.execPath;
 
 let testDir: string;
 let configDir: string;
@@ -82,7 +85,7 @@ function startServer(): Promise<void> {
 
 async function runBuilt(args: string[], extraEnv: Record<string, string> = {}) {
   try {
-    const result = await execFileAsync(process.execPath, [
+    const result = await execFileAsync(nodeBinary, [
       "--no-warnings",
       "--experimental-loader", denyNativeLoader,
       builtCli,

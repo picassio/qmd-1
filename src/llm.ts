@@ -56,6 +56,7 @@ export type {
 
 import {
   disposeDefaultLlm,
+  registerLlamaCppLoader,
 } from "./llm-types.js";
 import type {
   LLM,
@@ -1517,6 +1518,10 @@ export function getDefaultLlamaCpp(): LlamaCpp {
   }
   return defaultLlamaCpp;
 }
+
+// Importing this local-only module enables the legacy synchronous singleton
+// without putting the native runtime in API/CLI static dependency graphs.
+registerLlamaCppLoader(() => getDefaultLlamaCpp());
 
 /**
  * Set a custom default LlamaCpp instance (useful for testing)

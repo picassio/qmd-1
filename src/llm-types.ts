@@ -16,6 +16,9 @@
 // =============================================================================
 
 export const DEFAULT_EMBED_MODEL_NAME = "embeddinggemma";
+export const DEFAULT_EMBED_MODEL_URI = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+export const DEFAULT_RERANK_MODEL_URI = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
+export const DEFAULT_GENERATE_MODEL_URI = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
 
 // =============================================================================
 // Embedding Formatting Functions
@@ -138,6 +141,9 @@ export type RerankDocument = {
 
 export interface LLM {
   readonly embedModelName: string;
+  /** Optional lossless tokenizer capability used by remote/local chunking. */
+  tokenize?(text: string): Promise<readonly any[]>;
+  detokenize?(tokens: readonly any[]): Promise<string>;
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
   embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
   generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null>;
@@ -194,7 +200,7 @@ export async function withLLMSessionGeneric<T>(
 // =============================================================================
 
 /** Lazy loader for LlamaCpp — set by llm.ts when it's imported */
-let llamaCppLoader: (() => Promise<LLM>) | null = null;
+let llamaCppLoader: (() => LLM | Promise<LLM>) | null = null;
 
 /** Generic LLM singleton (can be ApiLLM or LlamaCpp) */
 let defaultLlm: LLM | null = null;
@@ -203,7 +209,7 @@ let defaultLlm: LLM | null = null;
  * Register a lazy loader for the LlamaCpp singleton.
  * Called by llm.ts at import time.
  */
-export function registerLlamaCppLoader(loader: () => Promise<LLM>): void {
+export function registerLlamaCppLoader(loader: () => LLM | Promise<LLM>): void {
   llamaCppLoader = loader;
 }
 
@@ -220,6 +226,13 @@ export function setDefaultLlm(llm: LLM | null): void {
  */
 export function getDefaultLlm(): LLM {
   if (defaultLlm) return defaultLlm;
+  if (llamaCppLoader) {
+    const loaded = llamaCppLoader();
+    if (!(loaded instanceof Promise)) {
+      defaultLlm = loaded;
+      return defaultLlm;
+    }
+  }
   throw new Error(
     "No LLM configured. Set API providers in ~/.config/qmd/index.yml " +
     "or ensure node-llama-cpp is available for local models."

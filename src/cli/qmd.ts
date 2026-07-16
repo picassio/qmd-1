@@ -78,8 +78,21 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, setDefaultLlm, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
-import { ApiLLM, hasApiProviders } from "../llm-api.js";
+import {
+  disposeDefaultLlm,
+  getDefaultLlm,
+  setDefaultLlm,
+  DEFAULT_EMBED_MODEL_URI,
+  DEFAULT_GENERATE_MODEL_URI,
+  DEFAULT_RERANK_MODEL_URI,
+} from "../llm-types.js";
+import {
+  compatibilityMode,
+  selectConfiguredLlm,
+  selectNonLocalLlm,
+  withSelectedLlmSession,
+  type SelectedLlm,
+} from "../llm-selection.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -113,30 +126,46 @@ enableProductionMode();
 let store: ReturnType<typeof createStore> | null = null;
 let storeDbPathOverride: string | undefined;
 let currentIndexName = "index";
+let selectedLlm: SelectedLlm | null = null;
+let loadedConfig: ReturnType<typeof loadConfig> | undefined;
+
+function installSelectedLlm(selected: SelectedLlm): void {
+  selectedLlm = selected;
+  setDefaultLlm(selected.llm);
+  if (store) store.llm = selected.llm;
+}
 
 function getStore(): ReturnType<typeof createStore> {
   if (!store) {
+    // Validate explicit compatibility before any path can dynamically import
+    // the local runtime.
+    compatibilityMode();
     store = createStore(storeDbPathOverride);
-    // Sync YAML config into SQLite store_collections so store.ts reads from DB
+    // Sync YAML config into SQLite store_collections so store.ts reads from DB.
     try {
-      const config = loadConfig();
-      syncConfigToDb(store.db, config);
-      // API providers take priority over local GGUF models
-      if (hasApiProviders(config.providers)) {
-        const apiLlm = new ApiLLM({ providers: config.providers });
-        setDefaultLlm(apiLlm);
-      } else if (config.models) {
-        setDefaultLlamaCpp(new LlamaCpp({
-          embedModel: config.models.embed,
-          generateModel: config.models.generate,
-          rerankModel: config.models.rerank,
-        }));
-      }
+      loadedConfig = loadConfig();
+      syncConfigToDb(store.db, loadedConfig);
     } catch {
-      // Config may not exist yet — that's fine, DB works without it
+      loadedConfig = undefined;
+      // Config may not exist yet — that's fine, DB works without it.
+    }
+
+    if (selectedLlm) {
+      store.llm = selectedLlm.llm;
+    } else {
+      const nonLocal = selectNonLocalLlm(loadedConfig?.providers);
+      if (nonLocal) installSelectedLlm(nonLocal);
     }
   }
   return store;
+}
+
+async function ensureLlmSelected(): Promise<SelectedLlm> {
+  const activeStore = getStore();
+  const selected = selectedLlm ?? await selectConfiguredLlm(loadedConfig?.providers, loadedConfig?.models);
+  if (!selectedLlm) installSelectedLlm(selected);
+  activeStore.llm = selected.llm;
+  return selected;
 }
 
 function getDb(): Database {
@@ -479,6 +508,7 @@ async function showStatus(): Promise<void> {
   if (process.env.QMD_STATUS_DEVICE_PROBE === "1") {
     console.log(`\n${c.bold}Device${c.reset}`);
     try {
+      const { getDefaultLlamaCpp } = await import("../llm.js");
       const llm = getDefaultLlamaCpp();
       const device = await llm.getDeviceInfo({ allowBuild: false });
       if (device.gpu) {
@@ -1813,6 +1843,7 @@ type OutputOptions = {
   candidateLimit?: number;  // Max candidates to rerank (default: 40)
   intent?: string;       // Domain intent for disambiguation
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
+  noExpand?: boolean;    // vsearch only: one raw query, no chat expansion
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
 };
 
@@ -2288,6 +2319,7 @@ function logExpansionTree(originalQuery: string, expanded: ExpandedQuery[]): voi
 
 async function vectorSearch(query: string, opts: OutputOptions, _model: string = DEFAULT_EMBED_MODEL): Promise<void> {
   const store = getStore();
+  const selected = await ensureLlmSelected();
 
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
@@ -2296,12 +2328,13 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
 
   checkIndexHealth(store.db);
 
-  await withLLMSession(async () => {
+  await withSelectedLlmSession(selected, async () => {
     let results = await vectorSearchQuery(store, query, {
       collection: singleCollection,
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
       intent: opts.intent,
+      noExpand: opts.noExpand,
       hooks: {
         onExpand: (original, expanded) => {
           logExpansionTree(original, expanded);
@@ -2339,6 +2372,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
 
 async function querySearch(query: string, opts: OutputOptions, _embedModel: string = DEFAULT_EMBED_MODEL, _rerankModel: string = DEFAULT_RERANK_MODEL): Promise<void> {
   const store = getStore();
+  const selected = await ensureLlmSelected();
 
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
@@ -2352,7 +2386,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   // Intent can come from --intent flag or from intent: line in query document
   const intent = opts.intent || parsed?.intent;
 
-  await withLLMSession(async () => {
+  await withSelectedLlmSession(selected, async () => {
     let results;
 
     if (parsed) {
@@ -2522,6 +2556,8 @@ function parseCLI() {
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
+      "no-expand": { type: "boolean", default: false },
+      noExpand: { type: "boolean", default: false },
       intent: { type: "string" },
       // Chunking options
       "chunk-strategy": { type: "string" },  // "regex" (default) or "auto" (AST for code files)
@@ -2564,6 +2600,7 @@ function parseCLI() {
     lineNumbers: !!values["line-numbers"],
     candidateLimit: values["candidate-limit"] ? parseInt(String(values["candidate-limit"]), 10) : undefined,
     skipRerank: !!values["no-rerank"],
+    noExpand: !!values["no-expand"] || !!values.noExpand,
     explain: !!values.explain,
     intent: values.intent as string | undefined,
     chunkStrategy: parseChunkStrategy(values["chunk-strategy"]),
@@ -2786,6 +2823,7 @@ function showHelp(): void {
   console.log("  --full                     - Output full document instead of snippet");
   console.log("  -C, --candidate-limit <n>  - Max candidates to rerank (default 40, lower = faster)");
   console.log("  --no-rerank                - Skip LLM reranking (use RRF scores only, much faster on CPU)");
+  console.log("  --no-expand, --noExpand    - vsearch only: skip chat expansion and embed one query");
   console.log("  --line-numbers             - Include line numbers in output");
   console.log("  --explain                  - Include retrieval score traces (query --json/CLI)");
   console.log("  --files | --json | --csv | --md | --xml  - Output format");
@@ -3117,9 +3155,9 @@ if (isMain) {
         const maxDocsPerBatch = parseEmbedBatchOption("maxDocsPerBatch", cli.values["max-docs-per-batch"]);
         const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
-        // Ensure store is initialized (which sets up ApiLLM if providers configured)
+        // Ensure the selected remote/API/local adapter is installed first.
         getStore();
-        const { getDefaultLlm } = await import("../llm.js");
+        await ensureLlmSelected();
         const embedModelForIndex = getDefaultLlm().embedModelName || DEFAULT_EMBED_MODEL_URI;
         await vectorIndex(embedModelForIndex, !!cli.values.force, {
           maxDocsPerBatch,
@@ -3140,6 +3178,7 @@ if (isMain) {
         DEFAULT_RERANK_MODEL_URI,
       ];
       console.log(`${c.bold}Pulling models${c.reset}`);
+      const { pullModels, DEFAULT_MODEL_CACHE_DIR } = await import("../llm.js");
       const results = await pullModels(models, {
         refresh,
         cacheDir: DEFAULT_MODEL_CACHE_DIR,
@@ -3170,7 +3209,7 @@ if (isMain) {
       if (!cli.values["min-score"]) {
         cli.opts.minScore = 0.3;
       }
-      await vectorSearch(cli.query, cli.opts);
+      await vectorSearch(cli.query, { ...cli.opts, noExpand: cli.opts.noExpand });
       break;
 
     case "query":
@@ -3363,7 +3402,7 @@ if (isMain) {
   }
 
   if (cli.command !== "mcp") {
-    await disposeDefaultLlamaCpp();
+    await disposeDefaultLlm();
     process.exit(0);
   }
 

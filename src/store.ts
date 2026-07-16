@@ -1506,16 +1506,19 @@ export async function generateEmbeddings(
         if (!doc.body.trim()) continue;
 
         const title = extractTitle(doc.body, doc.path);
-        // Skip native tokenizer when using API providers — they don't expose tokenize().
-        // This avoids loading node-llama-cpp for embedding-only workflows.
-        const skipTokenizer = !('tokenize' in llm);
+        // Use the selected adapter's tokenizer when available. Ordinary API
+        // adapters keep character estimation and never load the local runtime.
+        const tokenizer = typeof llm.tokenize === "function" && typeof llm.detokenize === "function"
+          ? { tokenize: llm.tokenize.bind(llm), detokenize: llm.detokenize.bind(llm) }
+          : undefined;
         const chunks = await chunkDocumentByTokens(
           doc.body,
           undefined, undefined, undefined,
           doc.path,
           options?.chunkStrategy,
           session.signal,
-          skipTokenizer,
+          !tokenizer,
+          tokenizer,
         );
 
         for (let seq = 0; seq < chunks.length; seq++) {
@@ -1692,7 +1695,7 @@ export function createStore(dbPath?: string): Store {
 
     // Search
     searchFTS: (query: string, limit?: number, collectionName?: string, metadataFilter?: MetadataFilter, graphBoost?: boolean) => searchFTS(db, query, limit, collectionName, metadataFilter, graphBoost),
-    searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding),
+    searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, store.llm),
 
     // Query expansion & reranking
     expandQuery: (query: string, model?: string, intent?: string) => expandQuery(query, model, db, intent, store.llm),
@@ -2502,11 +2505,13 @@ export async function chunkDocumentByTokens(
   signal?: AbortSignal,
   /** When true, skip loading node-llama-cpp and use char-based estimation. */
   skipTokenizer?: boolean,
+  /** Tokenizer supplied by the selected LLM (keeps remote/API paths native-free). */
+  tokenizer?: { tokenize(text: string): Promise<readonly any[]>; detokenize(tokens: readonly any[]): Promise<string> },
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  // Try to get LlamaCpp for accurate tokenization. Falls back to
-  // char-based estimation (chars/4) when only API providers are available.
-  let llm: { tokenize(text: string): Promise<readonly unknown[]>; detokenize(tokens: readonly unknown[]): Promise<string> } | null = null;
-  if (!skipTokenizer) {
+  // Prefer the selected LLM's optional tokenizer. Only legacy/local callers
+  // without an injected tokenizer may dynamically load the local tokenizer.
+  let llm = tokenizer ?? null;
+  if (!llm && !skipTokenizer) {
     try {
       const mod = await import("./llm.js");
       llm = mod.getDefaultLlamaCpp();
@@ -3480,11 +3485,11 @@ export function graphExpand(db: Database, topResults: SearchResult[], limit: num
 // Vector Search
 // =============================================================================
 
-export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]): Promise<SearchResult[]> {
+export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[], llmOverride?: LLM): Promise<SearchResult[]> {
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!tableExists) return [];
 
-  const embedding = precomputedEmbedding ?? await getEmbedding(query, model, true, session);
+  const embedding = precomputedEmbedding ?? await getEmbedding(query, model, true, session, llmOverride);
   if (!embedding) return [];
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -4670,6 +4675,8 @@ export interface VectorSearchOptions {
   limit?: number;           // default 10
   minScore?: number;        // default 0.3
   intent?: string;          // domain intent hint for disambiguation
+  /** Skip chat expansion and search only the original formatted query. */
+  noExpand?: boolean;
   hooks?: Pick<SearchHooks, 'onExpand'>;
 }
 
@@ -4701,15 +4708,16 @@ export async function vectorSearchQuery(
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
   const intent = options?.intent;
+  const noExpand = options?.noExpand ?? false;
 
   const hasVectors = !!store.db.prepare(
     `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
   ).get();
   if (!hasVectors) return [];
 
-  // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
+  // Expand query unless the caller selected the one-query hot path.
   const expandStart = Date.now();
-  const allExpanded = await store.expandQuery(query, undefined, intent);
+  const allExpanded = noExpand ? [] : await store.expandQuery(query, undefined, intent);
   const vecExpanded = allExpanded.filter(q => q.type !== 'lex');
   options?.hooks?.onExpand?.(query, vecExpanded, Date.now() - expandStart);
 

@@ -61,6 +61,7 @@ describe("vectorSearchQuery no-expand path", () => {
     const llm = countingLlm([{ type: "vec", text: "must not run" }]);
     const store = vectorStore(llm);
     const searchVec = vi.spyOn(store, "searchVec");
+    const prepare = vi.spyOn(store.db, "prepare");
 
     try {
       await vectorSearchQuery(store, "profile preferences", { noExpand: true });
@@ -69,7 +70,8 @@ describe("vectorSearchQuery no-expand path", () => {
     }
 
     expect(llm.expandQuery).not.toHaveBeenCalled();
-    expect(llm.embed).toHaveBeenCalledExactlyOnceWith(
+    expect(llm.embed).toHaveBeenCalledTimes(1);
+    expect(llm.embed).toHaveBeenCalledWith(
       formatQueryForEmbedding("profile preferences", "embeddinggemma"),
       { model: "embeddinggemma", isQuery: true },
     );
@@ -77,6 +79,8 @@ describe("vectorSearchQuery no-expand path", () => {
     expect(searchVec).toHaveBeenCalledWith(
       "profile preferences", "embeddinggemma", 10, undefined,
     );
+    const vectorLookups = prepare.mock.calls.filter(([sql]) => String(sql).includes("embedding MATCH"));
+    expect(vectorLookups).toHaveLength(1);
   });
 
   test("default vector search retains expansion and embeds every vector variant", async () => {

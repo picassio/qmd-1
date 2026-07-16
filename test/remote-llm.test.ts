@@ -15,13 +15,14 @@ const qmdKeys = [
 ] as const;
 
 const requests: CapturedRequest[] = [];
+const realFetch = globalThis.fetch;
 
 function clearQmdEnv(): void {
   for (const key of qmdKeys) delete process.env[key];
 }
 
 function stubFetch(handler: (request: CapturedRequest) => Response | Promise<Response>): void {
-  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const request: CapturedRequest = {
       url: String(input),
       headers: Object.fromEntries(new Headers(init?.headers).entries()),
@@ -29,7 +30,7 @@ function stubFetch(handler: (request: CapturedRequest) => Response | Promise<Res
     };
     requests.push(request);
     return handler(request);
-  }));
+  }) as typeof fetch;
 }
 
 beforeEach(() => {
@@ -40,7 +41,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearQmdEnv();
-  vi.unstubAllGlobals();
+  globalThis.fetch = realFetch;
   vi.restoreAllMocks();
 });
 

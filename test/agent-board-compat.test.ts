@@ -16,6 +16,7 @@ const envKeys = [
 
 let tempDir: string;
 let counter = 0;
+const realFetch = globalThis.fetch;
 
 function dbPath(): string {
   counter += 1;
@@ -45,14 +46,14 @@ beforeEach(async () => {
 
 afterEach(async () => {
   for (const key of envKeys) delete process.env[key];
-  vi.unstubAllGlobals();
+  globalThis.fetch = realFetch;
   vi.restoreAllMocks();
   await rm(tempDir, { recursive: true, force: true });
 });
 
 describe("QMD_COMPAT_MODE selection", () => {
-  test("explicit StoreOptions.llm wins over Agent Board compatibility", async () => {
-    process.env.QMD_COMPAT_MODE = "agent-board";
+  test("explicit StoreOptions.llm wins even when the environment mode would otherwise be rejected", async () => {
+    process.env.QMD_COMPAT_MODE = "surprise-mode";
     process.env.QMD_EMBED_URL = "https://embed.example/v1";
     const injected = injectedLlm();
 
@@ -110,7 +111,7 @@ describe("ordinary ApiLLM remains general purpose", () => {
         { index: 1, relevance_score: 0.9 },
       ],
     }));
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as typeof fetch;
 
     const result = await new ApiLLM().rerank("query", [
       { file: "a.md", text: "alpha" },
