@@ -25,6 +25,7 @@
     "build": "tsc -p tsconfig.build.json && printf '#!/usr/bin/env node\n' | cat - dist/cli/qmd.js > dist/cli/qmd.tmp && mv dist/cli/qmd.tmp dist/cli/qmd.js && chmod +x dist/cli/qmd.js",
     "test": "vitest run --reporter=verbose test/",
     "test:package": "bash test/package-artifact.test.sh",
+    "test:npm-ci": "bash test/npm-clean-install.test.sh",
     "qmd": "tsx src/cli/qmd.ts",
     "index": "tsx src/cli/qmd.ts index",
     "vector": "tsx src/cli/qmd.ts vector",
