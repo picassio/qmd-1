@@ -127,7 +127,8 @@ describe("RemoteLLM Agent Board wire contract", () => {
     await expect(llm.embed("sensitive document")).resolves.toBeNull();
     await expect(llm.generate("sensitive prompt")).resolves.toBeNull();
 
-    const diagnostics = JSON.stringify(vi.mocked(console.error).mock.calls);
+    const errorSpy = console.error as typeof console.error & { mock: { calls: unknown[][] } };
+    const diagnostics = JSON.stringify(errorSpy.mock.calls);
     expect(diagnostics).not.toContain(sentinel);
     expect(diagnostics).toContain("RemoteLLM embed HTTP 503");
     expect(diagnostics).toContain("RemoteLLM chat HTTP 503");
