@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-07-16
+
+### Added
+
+- Explicit `QMD_COMPAT_MODE=agent-board` remote provider compatibility with
+  Agent Board's OpenAI-style embedding/chat wire format, failure behavior,
+  lossless Unicode tokenization, and identity reranking. Ordinary API-provider
+  and injected-LLM behavior remains unchanged.
+- `qmd vsearch --no-expand` and `--noExpand` perform no chat expansion and use
+  exactly one raw-query embedding and one vector lookup.
+- `QMD_SQLITE_BUSY_TIMEOUT` configures deterministic SQLite lock waits
+  (120 seconds by default), including deadline-bounded WAL initialization.
+
+### Changed
+
+- Remote/API CLI, SDK, and MCP paths no longer statically import or instantiate
+  `node-llama-cpp`; the optional native peer is loaded only for local GGUF use.
+- Concurrent cold and warm store initialization is serialized and retry-safe.
+- Embedding completion now records the expected chunk count per document and
+  model. Partial, interrupted, legacy, and inconsistent vector sets remain
+  pending and are safely cleaned and retried.
+
+### Packaging
+
+- Prepared the additive compatibility and database-safety release as
+  `qmd-engine@2.6.0` under the reserved `engine-v2.6.0` fork tag namespace.
+- Regenerated npm, pnpm, and Bun locks with matching root identity and direct
+  dependency declarations. `node-llama-cpp` remains a development dependency
+  and optional peer, never a production dependency.
+- Added a reproducible artifact gate: two clean builds and packs must match,
+  the tar manifest must contain complete `dist/` output and no `node_modules`,
+  and the packed CLI must pass version, status, BM25, and remote no-expansion
+  smoke tests with native package resolution denied.
+
 ## [2.5.0] - 2026-07-13
 
 ### Changed

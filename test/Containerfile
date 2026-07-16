@@ -14,9 +14,9 @@ ENV PATH="/root/.local/bin:$PATH"
 RUN mise use -g node@latest bun@latest
 
 # Copy the packed tarball and install via both package managers
-COPY tobilu-qmd-*.tgz /tmp/
-RUN mise exec node@latest -- npm install -g /tmp/tobilu-qmd-*.tgz
-RUN mise exec bun@latest -- bun install -g /tmp/tobilu-qmd-*.tgz
+COPY qmd-engine-*.tgz /tmp/
+RUN mise exec node@latest -- npm install -g /tmp/qmd-engine-*.tgz
+RUN mise exec bun@latest -- bun install -g /tmp/qmd-engine-*.tgz
 
 # Copy test project (src + test + configs) and install deps
 COPY test-src/ /opt/qmd/

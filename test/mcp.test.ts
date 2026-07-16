@@ -592,10 +592,11 @@ describe("MCP Server", () => {
       expect(status.collections[0]!.path).toBe("/test/docs");
     });
 
-    test("shows documents needing embedding", () => {
+    test("conservatively re-embeds legacy rows without completion metadata", () => {
       const status = getStatus(testDb);
-      // large-file.md doesn't have embeddings
-      expect(status.needsEmbedding).toBe(1);
+      // This fixture intentionally uses the pre-completion-metadata schema.
+      // Existing seq0 rows cannot prove that every expected chunk was written.
+      expect(status.needsEmbedding).toBe(5);
     });
   });
 
