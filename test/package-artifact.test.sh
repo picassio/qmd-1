@@ -68,8 +68,8 @@ BUILD_TWO=$(dist_hash)
 echo "dist sha256: $BUILD_TWO"
 
 mkdir -p "$TMP/pack-one" "$TMP/pack-two"
-npm pack --ignore-scripts --json --pack-destination "$TMP/pack-one" > "$TMP/pack-one.json"
-npm pack --ignore-scripts --json --pack-destination "$TMP/pack-two" > "$TMP/pack-two.json"
+npm pack --ignore-scripts --foreground-scripts=false --json --pack-destination "$TMP/pack-one" > "$TMP/pack-one.json"
+npm pack --ignore-scripts --foreground-scripts=false --json --pack-destination "$TMP/pack-two" > "$TMP/pack-two.json"
 
 PACK_NAME=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[0]; if(p.name!=="qmd-engine"||p.version!=="2.6.0") process.exit(1); process.stdout.write(p.filename)' "$TMP/pack-one.json")
 PACK_ONE="$TMP/pack-one/$PACK_NAME"
