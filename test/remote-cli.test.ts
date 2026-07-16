@@ -29,6 +29,10 @@ let configDir: string;
 let docsDir: string;
 let copyDocsDir: string;
 let dbPath: string;
+let localConfigDir: string;
+let localDocsDir: string;
+let localCopyDocsDir: string;
+let localDbPath: string;
 let server: Server;
 let baseUrl: string;
 let embedCalls = 0;
@@ -120,21 +124,49 @@ async function runBuilt(args: string[], extraEnv: Record<string, string> = {}) {
   }
 }
 
+async function runBuiltConfiguredLocal(args: string[]) {
+  return runBuilt(args, {
+    INDEX_PATH: localDbPath,
+    QMD_CONFIG_DIR: localConfigDir,
+    PWD: localDocsDir,
+    QMD_COMPAT_MODE: "",
+    QMD_EMBED_MODEL: "",
+  });
+}
+
 beforeAll(async () => {
   testDir = await mkdtemp(join(tmpdir(), "qmd-remote-cli-"));
   configDir = join(testDir, "config");
   docsDir = join(testDir, "docs");
   copyDocsDir = join(testDir, "docs-copy");
   dbPath = join(testDir, "index.sqlite");
+  localConfigDir = join(testDir, "local-config");
+  localDocsDir = join(testDir, "local-docs");
+  localCopyDocsDir = join(testDir, "local-docs-copy");
+  localDbPath = join(testDir, "local-index.sqlite");
   await mkdir(configDir, { recursive: true });
   await mkdir(docsDir, { recursive: true });
   await mkdir(copyDocsDir, { recursive: true });
+  await mkdir(localConfigDir, { recursive: true });
+  await mkdir(localDocsDir, { recursive: true });
+  await mkdir(localCopyDocsDir, { recursive: true });
   await writeFile(join(docsDir, "remote.md"), remoteDocument);
   await writeFile(join(copyDocsDir, "remote.md"), remoteDocument);
+  await writeFile(join(localDocsDir, "remote.md"), remoteDocument);
+  await writeFile(join(localCopyDocsDir, "remote.md"), remoteDocument);
   await writeFile(join(configDir, "index.yml"), [
     "collections:",
     "  docs:",
     `    path: ${JSON.stringify(docsDir)}`,
+    "    pattern: '**/*.md'",
+    "",
+  ].join("\n"));
+  await writeFile(join(localConfigDir, "index.yml"), [
+    "models:",
+    "  embed: custom-local-model.gguf",
+    "collections:",
+    "  docs:",
+    `    path: ${JSON.stringify(localDocsDir)}`,
     "    pattern: '**/*.md'",
     "",
   ].join("\n"));
@@ -151,6 +183,17 @@ beforeAll(async () => {
     VALUES (?, 'remote-embed-model', 1, ?, ?)
   `).run(hash, now, now);
   store.close();
+
+  const localStore = createStore(localDbPath);
+  insertContent(localStore.db, hash, remoteDocument, now);
+  insertDocument(localStore.db, "docs", "remote.md", "Remote Search", hash, now, now);
+  localStore.ensureVecTable(2);
+  insertEmbedding(localStore.db, hash, 0, 0, new Float32Array([1, 0]), "custom-local-model.gguf", now);
+  localStore.db.prepare(`
+    INSERT INTO embedding_documents (hash, model, total_chunks, embedded_at, completed_at)
+    VALUES (?, 'custom-local-model.gguf', 1, ?, ?)
+  `).run(hash, now, now);
+  localStore.close();
 
   await startServer();
   await execFileAsync("npm", ["run", "build"], { cwd: projectRoot, maxBuffer: 10 * 1024 * 1024 });
@@ -212,6 +255,23 @@ describe("built native-free CLI", () => {
     expect(chatCalls).toBeGreaterThanOrEqual(1);
     expect(embedCalls).toBe(1);
     expect(result.stderr).not.toContain("native package resolution denied");
+  });
+
+  test("configured local model scopes native-free status and indexing notices", async () => {
+    const status = await runBuiltConfiguredLocal(["status"]);
+    expect(status.exitCode, status.stderr).toBe(0);
+    expect(status.stdout).not.toContain("Pending:");
+    expect(status.stderr).not.toContain("native package resolution denied");
+
+    const update = await runBuiltConfiguredLocal(["update"]);
+    expect(update.exitCode, update.stderr).toBe(0);
+    expect(update.stdout).not.toContain("need vectors");
+    expect(update.stderr).not.toContain("native package resolution denied");
+
+    const add = await runBuiltConfiguredLocal(["collection", "add", localCopyDocsDir, "--name", "docs-copy"]);
+    expect(add.exitCode, add.stderr).toBe(0);
+    expect(add.stdout).not.toContain("need vectors");
+    expect(add.stderr).not.toContain("native package resolution denied");
   });
 
   test("update and collection indexing notices use the active remote model", async () => {
