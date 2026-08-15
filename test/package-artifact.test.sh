@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT=$PWD
-EXPECTED_VERSION=2.6.0
+EXPECTED_VERSION=$(node -p "require('./package.json').version")
 # npm warns about pnpm's auto-install-peers project setting; keep gate output signal-only.
 export npm_config_loglevel=error
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/qmd-package.XXXXXX")
@@ -71,7 +71,7 @@ mkdir -p "$TMP/pack-one" "$TMP/pack-two"
 npm pack --ignore-scripts --foreground-scripts=false --json --pack-destination "$TMP/pack-one" > "$TMP/pack-one.json"
 npm pack --ignore-scripts --foreground-scripts=false --json --pack-destination "$TMP/pack-two" > "$TMP/pack-two.json"
 
-PACK_NAME=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[0]; if(p.name!=="qmd-engine"||p.version!=="2.6.0") process.exit(1); process.stdout.write(p.filename)' "$TMP/pack-one.json")
+PACK_NAME=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))[0]; if(p.name!=="qmd-engine"||p.version!==process.argv[2]) process.exit(1); process.stdout.write(p.filename)' "$TMP/pack-one.json" "$EXPECTED_VERSION")
 PACK_ONE="$TMP/pack-one/$PACK_NAME"
 PACK_TWO="$TMP/pack-two/$PACK_NAME"
 [[ -f "$PACK_ONE" && -f "$PACK_TWO" ]] || fail "npm pack did not create both tarballs"
