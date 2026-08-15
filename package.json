@@ -1,6 +1,6 @@
 {
   "name": "qmd-engine",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Hybrid search for markdown with BM25, vector search, and local or remote LLM reranking",
   "type": "module",
   "main": "dist/index.js",
