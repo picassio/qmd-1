@@ -783,6 +783,16 @@ function initializeDatabase(db: Database): void {
   enableWalWithRetry(db);
   db.exec("PRAGMA foreign_keys = ON");
 
+  // Fast path: when the schema is already current, skip the write-locked
+  // setup below entirely. BEGIN IMMEDIATE acquires the writer lock, so every
+  // store open otherwise queues behind any in-flight writer (e.g. another
+  // process's 20–30s embedding pass) — observed as interactive sessions
+  // hanging at startup. In WAL mode a read-only open never waits on writers.
+  const versionRow = db.prepare("PRAGMA user_version").get() as { user_version: number } | undefined;
+  if (versionRow?.user_version === QMD_SCHEMA_VERSION) {
+    return;
+  }
+
   // Serialize all idempotent schema setup so concurrent cold and warm opens
   // cannot interleave migrations, trigger creation, or virtual-table changes.
   db.exec("BEGIN IMMEDIATE");
@@ -945,12 +955,20 @@ function initializeDatabase(db: Database): void {
       WHERE new.active = 1;
     END
   `);
+    db.exec(`PRAGMA user_version = ${QMD_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}
     throw error;
   }
 }
+
+/**
+ * Version stamp for the schema-setup block above, persisted via SQLite's
+ * user_version pragma. BUMP THIS whenever any DDL/migration in that block
+ * changes, or existing stores will silently skip the new migration.
+ */
+const QMD_SCHEMA_VERSION = 260001;
 
 // =============================================================================
 // Store Collections — DB accessor functions

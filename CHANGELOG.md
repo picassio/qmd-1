@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Opening an existing store no longer takes the SQLite writer lock. Schema setup ran under `BEGIN IMMEDIATE` on every open, so any in-flight writer (e.g. another process's 20–30s embedding pass) blocked new opens — observed as interactive sessions hanging at startup. The schema block is now stamped with `PRAGMA user_version` (260001) and skipped entirely when current, making warm opens read-only (verified: 1.8ms open under a held write lock). Any future schema change must bump `QMD_SCHEMA_VERSION`.
+
 ## [2.6.0] - 2026-07-16
 
 ### Added
