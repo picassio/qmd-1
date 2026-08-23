@@ -1,6 +1,6 @@
 {
   "name": "qmd-engine",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "description": "Hybrid search for markdown with BM25, vector search, and local or remote LLM reranking",
   "type": "module",
   "main": "dist/index.js",
@@ -49,7 +49,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "better-sqlite3": "12.8.0",
+    "better-sqlite3": "13.0.3",
     "fast-glob": "3.3.3",
     "picomatch": "4.0.4",
     "sqlite-vec": "0.1.9",

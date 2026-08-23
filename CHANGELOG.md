@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.6.2] - 2026-08-23
+
+### Fixed
+- Upgraded `better-sqlite3` from 12.8.0 to 13.0.3 (Node >=22). Version 13 runs on N-API instead of the legacy V8 addon API, eliminating the `AddEnvironmentCleanupHook`/`RemoveEnvironmentCleanupHook` symbols behind intermittent native teardown assertions when a host exits with prepared statement wrappers pending.
+- The package-release contract now derives its expected package identity from `package.json` instead of retaining a hard-coded 2.6.0 version across later releases.
+
 ## [2.6.1] - 2026-08-15
 
 ### Fixed
