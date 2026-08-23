@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-08-23
+
+### Fixed
+- Bundled `better-sqlite3` 13.0.3 and its cross-platform N-API prebuilds inside the qmd-engine tarball. npm otherwise invokes an implicit `node-gyp rebuild` for better-sqlite3 13 on Windows despite `gypfile: false` and bundled prebuilds, making compiler-free installs fail. The artifact gate permits only the expected better-sqlite3/node-addon-api bundle and requires all eight supported platform/architecture binaries.
+
 ## [2.6.2] - 2026-08-23
 
 ### Fixed

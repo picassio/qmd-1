@@ -89,14 +89,20 @@ echo "npm integrity: $INTEGRITY_ONE"
 
 MANIFEST="$TMP/tar-manifest.txt"
 tar -tzf "$PACK_ONE" | LC_ALL=C sort > "$MANIFEST"
-if grep -Eq '(^|/)node_modules(/|$)' "$MANIFEST"; then
-  fail "tarball contains node_modules"
-fi
-if grep -Ev '^package/(CHANGELOG\.md|LICENSE|README\.md|package\.json|bin/qmd|dist/.+)$' "$MANIFEST" | grep -q .; then
+# better-sqlite3 13 ships cross-platform N-API prebuilds but npm otherwise
+# invokes an implicit node-gyp build on Windows. Bundle only that dependency
+# (plus its node-addon-api transitive dependency) so installs use the shipped
+# prebuild and require no compiler. No other node_modules may escape.
+ALLOWED_ENTRY='^package/(CHANGELOG\.md|LICENSE|README\.md|package\.json|bin/qmd|dist/.+|node_modules/(better-sqlite3|node-addon-api)/.+)$'
+if grep -Ev "$ALLOWED_ENTRY" "$MANIFEST" | grep -q .; then
   echo "Unexpected tar entries:" >&2
-  grep -Ev '^package/(CHANGELOG\.md|LICENSE|README\.md|package\.json|bin/qmd|dist/.+)$' "$MANIFEST" >&2
+  grep -Ev "$ALLOWED_ENTRY" "$MANIFEST" >&2
   fail "tarball escaped the package allowlist"
 fi
+for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 linuxmusl-arm64 linuxmusl-x64 win32-arm64 win32-x64; do
+  grep -Fxq "package/node_modules/better-sqlite3/prebuilds/$platform.node" "$MANIFEST" \
+    || fail "tarball missing bundled better-sqlite3 prebuild: $platform"
+done
 
 while IFS= read -r output; do
   grep -Fxq "package/$output" "$MANIFEST" || fail "tarball missing $output"
@@ -125,6 +131,7 @@ for (const name of names) {
   const source = join(root, "node_modules", ...name.split("/"));
   if (!existsSync(source)) continue;
   const target = join(packageDir, "node_modules", ...name.split("/"));
+  if (existsSync(target)) continue; // bundled dependencies are already staged
   mkdirSync(dirname(target), { recursive: true });
   symlinkSync(source, target, "dir");
 }

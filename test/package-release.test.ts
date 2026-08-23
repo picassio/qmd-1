@@ -68,6 +68,7 @@ describe("npm artifact release contract", () => {
 
   it("ships only the explicit package allowlist and has a mandatory artifact gate", () => {
     expect(packageJson.files).toEqual(["bin/", "dist/", "LICENSE", "CHANGELOG.md"]);
+    expect(packageJson.bundledDependencies).toEqual(["better-sqlite3"]);
     expect(packageJson.scripts.prepublishOnly).toBe("npm run build");
     expect(packageJson.scripts["test:package"]).toBe("bash test/package-artifact.test.sh");
     expect(statSync(resolve(root, "test/package-artifact.test.sh")).mode & 0o111).not.toBe(0);
