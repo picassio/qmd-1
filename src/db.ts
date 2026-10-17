@@ -1,9 +1,15 @@
 /**
  * db.ts - Cross-runtime SQLite compatibility layer
  *
- * Provides a unified Database export that works under both Bun (bun:sqlite)
- * and Node.js (better-sqlite3). The APIs are nearly identical — the main
- * difference is the import path.
+ * Provides a unified Database export that works under Bun (bun:sqlite), Node.js
+ * with better-sqlite3 (the default), and Node.js's own node:sqlite. The APIs are
+ * nearly identical — the main difference is the import path.
+ *
+ * QMD_SQLITE_DRIVER=node selects node:sqlite (Node 22.13 or later): no native
+ * addon, for platforms better-sqlite3 has no build for, such as Android. It is
+ * read once, when this module loads. QMD_SQLITE_VEC_PATH names a sqlite-vec
+ * loadable extension to use instead of the sqlite-vec package's own, for a
+ * platform that package has no build for.
  *
  * On macOS, Apple's system SQLite is compiled with SQLITE_OMIT_LOAD_EXTENSION,
  * which prevents loading native extensions like sqlite-vec. When running under
@@ -23,10 +29,44 @@ export function resolveSqliteBusyTimeout(value = process.env.QMD_SQLITE_BUSY_TIM
   return Math.floor(parsed);
 }
 
+/** Which SQLite driver this process uses: `QMD_SQLITE_DRIVER`, or the runtime's default. */
+export type SqliteDriver = "bun" | "better-sqlite3" | "node";
+
+export function resolveSqliteDriver(value = process.env.QMD_SQLITE_DRIVER): SqliteDriver {
+  if (value === undefined || value.trim() === "") return isBun ? "bun" : "better-sqlite3";
+  const driver = value.trim();
+  if (driver !== "better-sqlite3" && driver !== "node" && driver !== "bun") {
+    throw new Error(`QMD_SQLITE_DRIVER must be better-sqlite3, node, or bun; got ${JSON.stringify(value)}`);
+  }
+  if (isBun !== (driver === "bun")) {
+    throw new Error(`QMD_SQLITE_DRIVER=${driver} cannot run under ${isBun ? "Bun" : "Node.js"}`);
+  }
+  return driver;
+}
+
+export const sqliteDriver: SqliteDriver = resolveSqliteDriver();
+/** A sqlite-vec loadable extension of the caller's choosing, for a platform the sqlite-vec package lacks. */
+const sqliteVecPath = process.env.QMD_SQLITE_VEC_PATH?.trim() || undefined;
+
 let _Database: any;
 let _sqliteVecLoad: ((db: any) => void) | null;
 
-if (isBun) {
+if (sqliteDriver === "node") {
+  const { NodeSqliteDatabase } = await import("./db-node.js");
+  _Database = NodeSqliteDatabase;
+  if (sqliteVecPath !== undefined) {
+    _sqliteVecLoad = (db: any) => db.loadExtension(sqliteVecPath);
+  } else {
+    try {
+      const { getLoadablePath } = await import("sqlite-vec");
+      const vecPath = getLoadablePath();
+      _sqliteVecLoad = (db: any) => db.loadExtension(vecPath);
+    } catch {
+      // No build of sqlite-vec for this platform: vector search won't work, BM25 and the rest are unaffected.
+      _sqliteVecLoad = null;
+    }
+  }
+} else if (isBun) {
   // Dynamic string prevents tsc from resolving bun:sqlite on Node.js builds
   const bunSqlite = "bun:" + "sqlite";
   const BunDatabase = (await import(/* @vite-ignore */ bunSqlite)).Database;
@@ -61,12 +101,16 @@ if (isBun) {
   }
 } else {
   _Database = (await import("better-sqlite3")).default;
-  const sqliteVec = await import("sqlite-vec");
-  _sqliteVecLoad = (db: any) => sqliteVec.load(db);
+  if (sqliteVecPath !== undefined) {
+    _sqliteVecLoad = (db: any) => db.loadExtension(sqliteVecPath);
+  } else {
+    const sqliteVec = await import("sqlite-vec");
+    _sqliteVecLoad = (db: any) => sqliteVec.load(db);
+  }
 }
 
 /**
- * Open a SQLite database. Works with both bun:sqlite and better-sqlite3.
+ * Open a SQLite database. Works with bun:sqlite, better-sqlite3, and node:sqlite.
  */
 export function openDatabase(path: string): Database {
   const db = new _Database(path) as Database;
@@ -108,7 +152,9 @@ export function loadSqliteVec(db: Database): void {
     const hint = isBun && process.platform === "darwin"
       ? "On macOS with Bun, install Homebrew SQLite: brew install sqlite\n" +
         "Or install qmd with npm instead: npm install -g @tobilu/qmd"
-      : "Ensure the sqlite-vec native module is installed correctly.";
+      : sqliteDriver === "node"
+        ? "The sqlite-vec package has no build for this platform: set QMD_SQLITE_VEC_PATH to a sqlite-vec loadable extension built for it."
+        : "Ensure the sqlite-vec native module is installed correctly.";
     throw new Error(`sqlite-vec extension is unavailable. ${hint}`);
   }
   _sqliteVecLoad(db);

@@ -826,6 +826,8 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 |----------|---------|-------------|
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
 | `QMD_SQLITE_BUSY_TIMEOUT` | `120000` | SQLite lock wait in milliseconds; `0` is fail-fast |
+| `QMD_SQLITE_DRIVER` | `better-sqlite3` (Bun: `bun`) | `node` uses Node.js's own `node:sqlite` (22.13+): no native addon, for platforms such as Android |
+| `QMD_SQLITE_VEC_PATH` | unset | A sqlite-vec loadable extension to use instead of the sqlite-vec package's own |
 | `QMD_COMPAT_MODE` | unset | Set exactly `agent-board` for Agent Board remote semantics |
 | `QMD_EMBED_URL` | unset | Remote embedding API base URL |
 | `QMD_CHAT_URL` | unset | Remote chat API base URL |

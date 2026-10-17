@@ -42,6 +42,26 @@ jobs:
         if: runner.os == 'Linux' && matrix.node-version == '22'
         run: npm run test:package
 
+  test-node-sqlite:
+    name: Node 24, node:sqlite driver (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # better-sqlite3 is never loaded: the whole suite runs on Node's own SQLite, with the sqlite-vec package's
+      # extension loaded through it.
+      - run: npm ci --ignore-scripts
+
+      - name: Tests
+        run: npx vitest run --reporter=verbose --testTimeout 60000 test/
+        env:
+          CI: true
+          QMD_SQLITE_DRIVER: node
+
   test-bun:
     name: Bun (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
