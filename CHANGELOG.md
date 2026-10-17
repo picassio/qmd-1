@@ -5,7 +5,7 @@
 ## [2.7.0] - 2026-10-17
 
 ### Added
-- `QMD_SQLITE_DRIVER=node` runs QMD on Node.js's own `node:sqlite` (Node 22.13 or later) instead of better-sqlite3: no native addon, for platforms better-sqlite3 has no build for, such as Android (Termux, pi-phone). Statements bind and return as with better-sqlite3; `transaction()` keeps its semantics, nested calls as savepoints. FTS5/BM25 search, indexing, and the rest work as before. The default stays better-sqlite3 (Bun keeps bun:sqlite); an unknown driver, or one for the other runtime, is an error.
+- `QMD_SQLITE_DRIVER=node` runs QMD on Node.js's own `node:sqlite` (Node 22.13+ or 24+; Node 23's SQLite has no FTS5, and the driver refuses it, saying so) instead of better-sqlite3: no native addon, for platforms better-sqlite3 has no build for, such as Android (Termux, pi-phone). Statements bind and return as with better-sqlite3; `transaction()` keeps its semantics, nested calls as savepoints. FTS5/BM25 search, indexing, and the rest work as before. The default stays better-sqlite3 (Bun keeps bun:sqlite); an unknown driver, or one for the other runtime, is an error.
 - `QMD_SQLITE_VEC_PATH` loads a sqlite-vec extension built for a platform the sqlite-vec package has none for (with either Node.js driver). Without it, a platform with no sqlite-vec build keeps BM25 and loses vector search, as Bun without Homebrew SQLite does.
 
 ## [2.6.3] - 2026-08-23

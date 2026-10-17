@@ -52,7 +52,13 @@ let _Database: any;
 let _sqliteVecLoad: ((db: any) => void) | null;
 
 if (sqliteDriver === "node") {
-  const { NodeSqliteDatabase } = await import("./db-node.js");
+  const { NodeSqliteDatabase, nodeSqliteHasFts5 } = await import("./db-node.js");
+  if (!nodeSqliteHasFts5()) {
+    throw new Error(
+      `QMD_SQLITE_DRIVER=node: the SQLite in this Node.js (${process.version}) has no FTS5, which QMD's search needs. ` +
+      "Use Node 22.13 or later in the 22 line, or Node 24 or later.",
+    );
+  }
   _Database = NodeSqliteDatabase;
   if (sqliteVecPath !== undefined) {
     _sqliteVecLoad = (db: any) => db.loadExtension(sqliteVecPath);

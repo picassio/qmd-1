@@ -12,6 +12,16 @@ import type { Database, Statement } from "./db.js";
 
 let savepoints = 0;
 
+/** Whether this Node.js's own SQLite has FTS5, which QMD's keyword search needs (Node 23's has not). */
+export function nodeSqliteHasFts5(): boolean {
+  const db = new DatabaseSync(":memory:");
+  try {
+    return db.prepare("PRAGMA compile_options").all().some((row: any) => row.compile_options === "ENABLE_FTS5");
+  } finally {
+    db.close();
+  }
+}
+
 export class NodeSqliteDatabase implements Database {
   readonly #db: DatabaseSync;
   #depth = 0;

@@ -8,7 +8,7 @@ import { resolveSqliteDriver } from "../src/db.js";
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 
 describe.skipIf(isBun)("node:sqlite driver", async () => {
-  const { NodeSqliteDatabase } = await import("../src/db-node.js");
+  const { NodeSqliteDatabase, nodeSqliteHasFts5 } = await import("../src/db-node.js");
 
   const open = () => {
     const db = new NodeSqliteDatabase(":memory:");
@@ -64,7 +64,8 @@ describe.skipIf(isBun)("node:sqlite driver", async () => {
     db.close();
   });
 
-  test("FTS5 with BM25 is there, as QMD's keyword search needs", () => {
+  // Node 23's SQLite has none: db.ts then refuses the driver, saying so.
+  test.skipIf(!nodeSqliteHasFts5())("FTS5 with BM25 is there, as QMD's keyword search needs", () => {
     const db = open();
     db.exec("CREATE VIRTUAL TABLE f USING fts5(body, tokenize='porter unicode61')");
     db.prepare("INSERT INTO f (body) VALUES (?)").run("projects areas resources archives");
