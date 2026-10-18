@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [2.7.3] - 2026-10-18
+
+### Security
+- `@modelcontextprotocol/sdk` 1.29.0 → 1.32.1, past GHSA-6qxp-vccf-f47h (1.12.0 to 1.30.1: its OAuth client could send credentials to an authorization server the MCP server chose). QMD's MCP server uses no OAuth client; the bump clears the audit finding for hosts that install qmd-engine.
+
 ## [2.7.2] - 2026-10-18
 
 ### Added
