@@ -12,6 +12,7 @@
  */
 
 import { openDatabase, loadSqliteVec, resolveSqliteBusyTimeout } from "./db.js";
+import { localModelsAllowed } from "./local-models.js";
 import type { Database } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
@@ -2728,7 +2729,8 @@ export async function chunkDocumentByTokens(
   // Prefer the selected LLM's optional tokenizer. Only legacy/local callers
   // without an injected tokenizer may dynamically load the local tokenizer.
   let llm = tokenizer ?? null;
-  if (!llm && !skipTokenizer) {
+  // With local models off, the local tokenizer is never loaded: chunks are sized by characters.
+  if (!llm && !skipTokenizer && localModelsAllowed()) {
     try {
       const mod = await import("./llm.js");
       llm = mod.getDefaultLlamaCpp();

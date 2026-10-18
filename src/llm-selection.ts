@@ -1,5 +1,6 @@
 /** Native-free LLM selection and session routing. */
 import { ApiLLM, hasApiProviders } from "./llm-api.js";
+import { requireLocalModels } from "./local-models.js";
 import { RemoteLLM } from "./remote-llm.js";
 import {
   withLLMSessionGeneric,
@@ -57,6 +58,9 @@ export async function selectConfiguredLlm(
   const nonLocal = selectNonLocalLlm(providers);
   if (nonLocal) return nonLocal;
 
+  // No remote provider: the local runtime would be next. Refused before anything local is imported.
+  requireLocalModels("no remote API provider is configured, so selecting a model");
+
   try {
     const { LlamaCpp } = await import("./llm.js");
     return {
@@ -84,6 +88,7 @@ export async function withSelectedLlmSession<T>(
   options?: LLMSessionOptions,
 ): Promise<T> {
   if (selected.mode === "local") {
+    requireLocalModels("this local model session");
     const { withLLMSessionForLlm } = await import("./llm.js");
     return withLLMSessionForLlm(selected.llm, fn, options);
   }

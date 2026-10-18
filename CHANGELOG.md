@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-10-18
+
+### Added
+- `QMD_NO_LOCAL_MODELS=1` turns local models off: QMD never selects, imports, downloads, or falls back to node-llama-cpp or a GGUF model, and the local tokenizer is never loaded (chunks are sized by characters). With no remote API provider configured, selecting a model is an error that says so. For hosts where a local model is never wanted, such as phones. Remote providers work as before.
+
 ## [2.7.0] - 2026-10-17
 
 ### Added

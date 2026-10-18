@@ -1,4 +1,5 @@
 import { openDatabase } from "../db.js";
+import { requireLocalModels } from "../local-models.js";
 import type { Database } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
@@ -517,6 +518,7 @@ async function showStatus(): Promise<void> {
   if (process.env.QMD_STATUS_DEVICE_PROBE === "1") {
     console.log(`\n${c.bold}Device${c.reset}`);
     try {
+      requireLocalModels("probing the local model device");
       const { getDefaultLlamaCpp } = await import("../llm.js");
       const llm = getDefaultLlamaCpp();
       const device = await llm.getDeviceInfo({ allowBuild: false });
@@ -3188,6 +3190,7 @@ if (isMain) {
         DEFAULT_RERANK_MODEL_URI,
       ];
       console.log(`${c.bold}Pulling models${c.reset}`);
+      requireLocalModels("pulling local models");
       const { pullModels, DEFAULT_MODEL_CACHE_DIR } = await import("../llm.js");
       const results = await pullModels(models, {
         refresh,
