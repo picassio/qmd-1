@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-10-18
+
+### Added
+- Remote providers keep the embeddings of recent search queries (`ApiLLM`, the last 256, by model and text): a query searched again sends no embedding request. A remote query embedding takes from 0.2 s to more than 1 s, so a refreshed page or a repeated tool call now answers at local speed. Documents are never kept, nor failed answers.
+
 ## [2.7.1] - 2026-10-18
 
 ### Added

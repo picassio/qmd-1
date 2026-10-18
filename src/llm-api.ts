@@ -161,9 +161,18 @@ async function post<T>(
 // ApiLLM
 // =============================================================================
 
+/** How many search queries' embeddings an ApiLLM keeps: the same query again costs no request. */
+export const QUERY_EMBEDDING_CACHE = 256;
+
 export class ApiLLM implements LLM {
   private p: ResolvedProviders;
   private disposed = false;
+  /**
+   * Embeddings of search queries (`isQuery`), newest last, by model and text. A query searched again (a page refreshed,
+   * a tool asking twice) is answered from here: a remote embedding takes from a fifth of a second to more than a second.
+   * Documents are never kept here; only answers that came back whole.
+   */
+  private queryEmbeddings = new Map<string, EmbeddingResult>();
 
   constructor(config: ApiLLMConfig = {}) {
     this.p = resolve(config.providers);
@@ -176,6 +185,16 @@ export class ApiLLM implements LLM {
   async embed(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
     if (this.disposed) return null;
     const { url, key, model, dims } = this.p.embed;
+    const cacheKey = options.isQuery ? `${options.model || model}\u0000${dims ?? ""}\u0000${text}` : undefined;
+    const cached = cacheKey === undefined ? undefined : this.queryEmbeddings.get(cacheKey);
+
+    if (cached !== undefined) {
+      // Most recently used last.
+      this.queryEmbeddings.delete(cacheKey!);
+      this.queryEmbeddings.set(cacheKey!, cached);
+      return cached;
+    }
+
     try {
       const body: Record<string, unknown> = { model: options.model || model, input: text };
       if (dims) body.dimensions = dims;
@@ -186,7 +205,16 @@ export class ApiLLM implements LLM {
       }>(`${url}/embeddings`, body, key, this.p.timeout);
 
       const vec = data.data?.[0]?.embedding;
-      return vec ? { embedding: vec, model: data.model || model } : null;
+      const result = vec ? { embedding: vec, model: data.model || model } : null;
+
+      if (result !== null && cacheKey !== undefined) {
+        this.queryEmbeddings.set(cacheKey, result);
+        if (this.queryEmbeddings.size > QUERY_EMBEDDING_CACHE) {
+          this.queryEmbeddings.delete(this.queryEmbeddings.keys().next().value!);
+        }
+      }
+
+      return result;
     } catch (err) {
       console.error("embed error:", (err as Error).message);
       return null;
