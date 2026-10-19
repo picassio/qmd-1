@@ -164,6 +164,53 @@ async function post<T>(
 /** How many search queries' embeddings an ApiLLM keeps: the same query again costs no request. */
 export const QUERY_EMBEDDING_CACHE = 256;
 
+/**
+ * What a remote provider said an embedding request used, as OpenAI-style APIs report it (`usage`): so a host can count
+ * what search by meaning costs. `cost` is in US dollars, when the provider says it (OpenRouter's `usage.cost`).
+ */
+export type ApiUsage = {
+  kind: "embed";
+  url: string;
+  model: string;
+  /** How many texts the request embedded. */
+  inputs: number;
+  promptTokens: number;
+  cost?: number;
+};
+
+const usageListeners = new Set<(usage: ApiUsage) => void>();
+
+/** Hear the usage of every remote embedding request that reports one; returns how to stop. */
+export function onApiUsage(listener: (usage: ApiUsage) => void): () => void {
+  usageListeners.add(listener);
+  return () => {
+    usageListeners.delete(listener);
+  };
+}
+
+type ReportedUsage = { prompt_tokens?: number; total_tokens?: number; cost?: number };
+
+function reportUsage(url: string, model: string, inputs: number, usage: ReportedUsage | undefined): void {
+  if (usage === undefined || usageListeners.size === 0) return;
+  const tokens = usage.prompt_tokens ?? usage.total_tokens;
+  if (typeof tokens !== "number") return;
+  const each: ApiUsage = {
+    kind: "embed",
+    url,
+    model,
+    inputs,
+    promptTokens: tokens,
+    ...(typeof usage.cost === "number" ? { cost: usage.cost } : {}),
+  };
+  for (const listener of usageListeners) {
+    try {
+      listener(each);
+    } catch (err) {
+      console.error("usage listener error:", (err as Error).message);
+    }
+  }
+}
+
 export class ApiLLM implements LLM {
   private p: ResolvedProviders;
   private disposed = false;
@@ -202,8 +249,10 @@ export class ApiLLM implements LLM {
       const data = await post<{
         data: Array<{ embedding: number[] }>;
         model: string;
+        usage?: ReportedUsage;
       }>(`${url}/embeddings`, body, key, this.p.timeout);
 
+      reportUsage(url, data.model || options.model || model, 1, data.usage);
       const vec = data.data?.[0]?.embedding;
       const result = vec ? { embedding: vec, model: data.model || model } : null;
 
@@ -231,8 +280,10 @@ export class ApiLLM implements LLM {
       const data = await post<{
         data: Array<{ embedding: number[]; index: number }>;
         model: string;
+        usage?: ReportedUsage;
       }>(`${url}/embeddings`, body, key, this.p.timeout);
 
+      reportUsage(url, data.model || options.model || model, texts.length, data.usage);
       const sorted = (data.data || []).sort((a, b) => a.index - b.index);
       return texts.map((_, i) => {
         const item = sorted[i];

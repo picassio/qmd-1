@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [2.7.4] - 2026-10-19
+
+### Added
+- `onApiUsage(listener)`: remote embedding requests (`ApiLLM.embed`, `embedBatch`) report what the provider said they used: the model, how many texts, the prompt tokens, and the cost in US dollars when the provider gives one (OpenRouter's `usage.cost`). A host can count what search by meaning costs. A query answered from the query cache sends no request and reports nothing; a listener that throws does not break the embedding.
+
 ## [2.7.3] - 2026-10-18
 
 ### Security

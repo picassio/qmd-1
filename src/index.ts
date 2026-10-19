@@ -81,6 +81,7 @@ export type {
 } from "./llm-types.js";
 import { compatibilityMode, selectConfiguredLlm } from "./llm-selection.js";
 export { RemoteLLM } from "./remote-llm.js";
+export { onApiUsage, type ApiUsage } from "./llm-api.js";
 import {
   setConfigSource,
   loadConfig,
